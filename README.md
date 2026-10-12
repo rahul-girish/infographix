@@ -56,7 +56,7 @@ uv pip install -r requirements.txt
 
 Register the virtual environment as a jupyter kernel.
 ```bash
-uv run ipython kernel install --user --env VIRTUAL_ENV $(pwd)/.venv --name=my-uv-env   
+uv run ipython kernel install --user --env VIRTUAL_ENV $(pwd)/.venv --name=infographix-venv  
 ```
 
 Start jupyter lab in a separate terminal **outside the venv**.
