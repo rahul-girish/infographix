@@ -1,10 +1,4 @@
 *.ipynb_checkpoints/
-/data/raw/
-/data/interim/scipostlayout/poster/pdf
-/data/interim/scipostlayout/poster/png/*/
-/data/interim/scipostlayout/poster/png/*.txt
-/data/interim/scipostlayout/poster/load_dataset.py
-/data/interim/scipostlayout/paper/
 
 # Python virtual environment
 .venv/
@@ -18,3 +12,14 @@ mlruns/
 # Python cache
 __pycache__/
 *.py[cod]
+
+# Dataset
+data/raw/
+data/interim/scipostlayout/paper/
+data/interim/scipostlayout/poster/pdf/
+data/interim/scipostlayout/poster/load_dataset.py
+data/interim/scipostlayout/poster/png/dev/
+data/interim/scipostlayout/poster/png/train/
+data/interim/scipostlayout/poster/png/test/
+data/interim/scipostlayout/poster/png/*.json
+data/interim/scipostlayout/poster/png/*.txt
