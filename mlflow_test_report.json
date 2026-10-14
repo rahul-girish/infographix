@@ -1,0 +1,4 @@
+{
+  "purpose": "Verify MLflow artifact logging",
+  "is_real_model_evaluation": false
+}

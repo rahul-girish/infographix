@@ -1,2 +1,14 @@
 *.ipynb_checkpoints/
 data/
+# Python virtual environment
+.venv/
+
+# MLflow local tracking database and artifacts
+mlflow.db
+mlflow.db-shm
+mlflow.db-wal
+mlruns/
+
+# Python cache
+__pycache__/
+*.py[cod]
