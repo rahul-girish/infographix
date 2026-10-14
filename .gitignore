@@ -5,3 +5,16 @@
 /data/interim/scipostlayout/poster/png/*.txt
 /data/interim/scipostlayout/poster/load_dataset.py
 /data/interim/scipostlayout/paper/
+
+# Python virtual environment
+.venv/
+
+# MLflow local tracking database and artifacts
+mlflow.db
+mlflow.db-shm
+mlflow.db-wal
+mlruns/
+
+# Python cache
+__pycache__/
+*.py[cod]
