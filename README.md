@@ -22,7 +22,7 @@ curl LsSf https://astral.sh/uv/0.13.0/install.sh | sh
 
 Install `dvc`
 ```bash
-uv tool install dvc
+uv tool install dvc[gdrive]
 ```
 
 Create a python virtual environment and activate it.
@@ -79,3 +79,13 @@ Initialize DVC
 ```bash
 dvc init
 ```
+
+In Google Drive, create a folder. Copy the folder ID (The part of the URL that comes after `folder/`). Then,
+```bash
+dvc remote add --default gdrive gdrive://folder_id
+```
+Check if it was configured:
+```bash
+dvc remote list
+```
+

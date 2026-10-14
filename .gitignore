@@ -1,2 +1,7 @@
 *.ipynb_checkpoints/
-data/
+/data/raw/
+/data/interim/scipostlayout/poster/pdf
+/data/interim/scipostlayout/poster/png/*/
+/data/interim/scipostlayout/poster/png/*.txt
+/data/interim/scipostlayout/poster/load_dataset.py
+/data/interim/scipostlayout/paper/

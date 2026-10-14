@@ -1,0 +1,6 @@
+outs:
+- md5: 7b4ddbff2c1db5e91e6305cdb55e03fb
+  size: 9077060
+  isexec: true
+  hash: md5
+  path: dev.json
