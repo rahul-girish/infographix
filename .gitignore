@@ -23,3 +23,6 @@ data/interim/scipostlayout/poster/png/train/
 data/interim/scipostlayout/poster/png/test/
 data/interim/scipostlayout/poster/png/*.json
 data/interim/scipostlayout/poster/png/*.txt
+
+/models/
+/reports/
