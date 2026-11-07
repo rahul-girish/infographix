@@ -1,0 +1,7 @@
+Model,Type,Fit Time (s),Predict Time (s),Clusters,Noise %,Smallest Cluster,Largest Cluster,Train Silhouette,Dev Silhouette,Test Silhouette,Davies-Bouldin,Calinski-Harabasz
+"K-Means (k=3, baseline)",kmeans,0.581,0.0072,3,0.0%,1457,2771,0.0712,0.0491,0.0549,2.9501,432.9
+K-Means (k=5),kmeans,0.602,0.0093,5,0.0%,6,2245,0.0612,0.0476,0.0622,2.4471,416.65
+DBSCAN (Raw 92 features),dbscan,0.233,0.0663,1,63.3%,2514,2514,,,,,
+"DBSCAN (PCA-15, balanced)",dbscan,2.954,0.0957,2,6.3%,66,6353,0.2015,0.193,0.207,1.4472,96.1
+"DBSCAN (PCA-25, balanced)",dbscan,0.227,0.0405,2,11.5%,39,6029,0.2085,,0.2149,1.3089,63.92
+"Agglomerative (k=3, Ward)",hierarchical,6.737,0.0,3,0.0%,5,3909,0.071,-,-,2.8761,384.87
