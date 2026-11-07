@@ -9,6 +9,8 @@ mlflow.db-shm
 mlflow.db-wal
 mlruns/
 
+.aim/
+
 # Python cache
 __pycache__/
 *.py[cod]
