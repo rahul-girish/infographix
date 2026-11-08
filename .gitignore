@@ -28,3 +28,6 @@ data/interim/scipostlayout/poster/png/*.txt
 
 /models/
 /reports/
+
+*.zst
+/.mydvc/credentials

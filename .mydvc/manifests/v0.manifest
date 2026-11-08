@@ -1,0 +1,12 @@
+MINIDVC-MANIFEST 2
+created: 1794126958
+files: 6
+size: 144376576
+project_id: 320b6617-63fa-42ea-a558-9d1e6332dde7
+
+a7c24ad027813856289977e0cfdfbfe8b8bf1b4c96ca92b96bc7b58e3ad9ec80	9077060	data/interim/scipostlayout/poster/png/dev.json
+773c80c1485f593fdff0d62f3eb9e804104162ede37d7e731b4c188f50991e09	5114	data/interim/scipostlayout/poster/png/dev.txt
+126364477cc99ff9c3dc6105024793663853a613c6bcf092f764ef5f62a6a114	9165992	data/interim/scipostlayout/poster/png/test.json
+1f66193d33164eb782470d0c3178fa4c315b2bf2305cba4d63bc1cf2240f4b21	5089	data/interim/scipostlayout/poster/png/test.txt
+12dca7e90294944c66a050be2cf885eaabb57c4e35dca7debc92f3b24f9a90f9	126053401	data/interim/scipostlayout/poster/png/train.json
+9d6f924b0d1df8bdea828739a7c72c82bdb99a050d98386c52465c3b5a982986	69920	data/interim/scipostlayout/poster/png/train.txt
