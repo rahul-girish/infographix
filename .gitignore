@@ -8,10 +8,9 @@ mlflow.db
 mlflow.db-shm
 mlflow.db-wal
 mlruns/
-
 .aim/
 
-# Python cache & testing
+# Python cache & test
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -19,21 +18,30 @@ __pycache__/
 htmlcov/
 
 # Environment secrets
+.env
 backend/.env
 
-# Dataset & Data Storage
-data/raw/
-data/interim/
-data/uploads/
-data/processed/*
-!data/processed/.gitignore
-!data/processed/*.dvc
-data/*.zip
-data/*.tar*
-data/*.parquet
-
-# Backend runtime data, uploads & local databases
+# Blanket Ignore for All Datasets & Uploads
+data/
+data/**
 backend/data/
+backend/data/**
+
+# All raw dataset images and documents
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.pdf
+*.docx
+!frontend/src/**/*.png
+!frontend/src/**/*.jpg
+!frontend/src/**/*.svg
+!frontend/public/**/*.png
+!frontend/public/**/*.svg
+!frontend/public/**/*.ico
+
+# Database files
 *.sqlite
 *.sqlite3
 *.db
