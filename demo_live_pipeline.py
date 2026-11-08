@@ -94,22 +94,33 @@ def run_live_demo():
     # STAGE 4: MACRO CLUSTERING & TEMPLATE RECOMMENDATION
     # -------------------------------------------------------------
     print("\n[STAGE 4] Predicting Layout Archetype on Test Dataset...")
-    test_df = pd.read_parquet(PROJECT_ROOT / "data" / "processed" / "features" / "test_features.parquet")
+    test_path = PROJECT_ROOT / "data" / "processed" / "features" / "test_features.parquet"
     feature_cols = manifest.feature_schema_columns
-    X_test_raw = test_df[feature_cols].to_numpy()
 
-    # Run inference on real test samples using the loaded production pipeline
-    sample_indices = [0, 15, 42, 88]
-    X_samples = X_test_raw[sample_indices]
-    X_scaled = preprocessor.transform(X_samples)
-    predictions = model.predict(X_scaled)
+    if test_path.exists():
+        test_df = pd.read_parquet(test_path)
+        X_test_raw = test_df[feature_cols].to_numpy()
+        sample_indices = [0, min(15, len(test_df) - 1), min(42, len(test_df) - 1)]
+        X_samples = X_test_raw[sample_indices]
+        X_scaled = preprocessor.transform(X_samples)
+        predictions = model.predict(X_scaled)
 
-    for idx, sample_id in enumerate(sample_indices):
-        pred_cluster = predictions[idx]
-        poster_id = test_df.iloc[sample_id].get("poster_id", f"sample_{sample_id}")
-        elements = test_df.iloc[sample_id].get("element_count", 0)
-        status = "Noise/Outlier (Excluded)" if pred_cluster == -1 else f"Layout Archetype {pred_cluster} (Recommended)"
-        print(f"  Poster #{poster_id} ({elements} elements): -> Predicted: {status}")
+        for idx, sample_id in enumerate(sample_indices):
+            pred_cluster = predictions[idx]
+            poster_id = test_df.iloc[sample_id].get("poster_id", f"sample_{sample_id}")
+            elements = test_df.iloc[sample_id].get("element_count", 0)
+            status = "Noise/Outlier (Excluded)" if pred_cluster == -1 else f"Layout Archetype {pred_cluster} (Recommended)"
+            print(f"  Poster #{poster_id} ({elements} elements): -> Predicted: {status}")
+    else:
+        print("  Notice: test_features.parquet not found on disk (fresh clone without DVC data pull).")
+        print("  Generating sample test vectors matching schema...")
+        n_features = len(feature_cols)
+        synthetic_samples = np.random.normal(loc=0.0, scale=1.0, size=(3, n_features))
+        X_scaled = preprocessor.transform(synthetic_samples)
+        predictions = model.predict(X_scaled)
+        for idx, pred_cluster in enumerate(predictions):
+            status = "Noise/Outlier" if pred_cluster == -1 else f"Layout Archetype {pred_cluster} (Recommended)"
+            print(f"  Sample #{idx+1}: -> Predicted: {status}")
 
     # -------------------------------------------------------------
     # STAGE 5: SIMULATING CANVAS EDIT & RE-EXPORT
