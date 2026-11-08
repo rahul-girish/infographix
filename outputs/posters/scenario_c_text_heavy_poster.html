@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Scientific Poster</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Merriweather:ital,wght@0,300;0,400;0,700;1,300&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --canvas-w: 1920px;
+    --canvas-h: 1484px;
+    --bg-color: #ffffff;
+    --primary: #1e3a8a;
+    --accent: #2563eb;
+    --text-main: #1e293b;
+    --text-muted: #64748b;
+    --border-light: #e2e8f0;
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    background-color: #0f172a;
+    color: var(--text-main);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px;
+    min-height: 100vh;
+  }
+
+  /* Top Toolbar */
+  .toolbar {
+    width: 100%;
+    max-width: var(--canvas-w);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #1e293b;
+    color: #f8fafc;
+    padding: 12px 20px;
+    border-radius: 8px 8px 0 0;
+    font-size: 14px;
+  }
+
+  .toolbar-title {
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .toolbar-badge {
+    background: #2563eb;
+    color: white;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 4px;
+    text-transform: uppercase;
+  }
+
+  .toolbar-meta {
+    color: #94a3b8;
+    font-size: 13px;
+  }
+
+  /* Poster Canvas */
+  .poster-wrapper {
+    position: relative;
+    width: var(--canvas-w);
+    height: var(--canvas-h);
+    background-color: var(--bg-color);
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.45);
+    overflow: hidden;
+    transform-origin: top center;
+  }
+
+  /* Base Element Styling */
+  .poster-el {
+    position: absolute;
+    box-sizing: border-box;
+    overflow: hidden;
+    transition: outline 0.15s ease;
+  }
+
+  .poster-el:hover {
+    outline: 2px dashed #3b82f6;
+    outline-offset: 1px;
+    z-index: 50;
+  }
+
+  /* Specific Semantic Category Styling */
+  .poster-el-title {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+  }
+
+  .poster-title-text {
+    font-size: 2.2em;
+    font-weight: 800;
+    letter-spacing: -0.025em;
+    color: #0f172a;
+    line-height: 1.15;
+    margin: 0;
+  }
+
+  .poster-el-author_info {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+  }
+
+  .poster-authors-text {
+    font-size: 1.05em;
+    font-weight: 500;
+    color: #475569;
+    line-height: 1.35;
+  }
+
+  .poster-el-section {
+    display: flex;
+    align-items: center;
+  }
+
+  .poster-section-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    border-bottom: 2px solid #e2e8f0;
+    padding-bottom: 4px;
+  }
+
+  .section-bar {
+    width: 6px;
+    height: 1.2em;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+
+  .poster-section-text {
+    font-size: 1.25em;
+    font-weight: 700;
+    color: #1e3a8a;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin: 0;
+  }
+
+  .poster-el-text {
+    font-family: 'Inter', system-ui, sans-serif;
+    color: #334155;
+    line-height: 1.45;
+  }
+
+  .poster-el-text p {
+    margin-bottom: 0.6em;
+  }
+
+  .poster-el-text p:last-child {
+    margin-bottom: 0;
+  }
+
+  .poster-el-caption {
+    font-size: 0.88em;
+    color: #64748b;
+    line-height: 1.35;
+    background: #f8fafc;
+    border-left: 3px solid #cbd5e1;
+    padding: 6px 10px;
+    border-radius: 0 4px 4px 0;
+  }
+
+  .poster-el-figure {
+    background: #f1f5f9;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px;
+  }
+
+  .figure-placeholder {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .figure-svg {
+    width: 100%;
+    height: 100%;
+  }
+
+  .poster-el-table {
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    overflow: auto;
+    padding: 6px;
+  }
+
+  .poster-table {
+    width: 100%;
+    height: 100%;
+    border-collapse: collapse;
+    font-size: 0.85em;
+    text-align: left;
+  }
+
+  .poster-table th {
+    background-color: #f1f5f9;
+    color: #1e293b;
+    font-weight: 600;
+    padding: 6px 10px;
+    border-bottom: 2px solid #cbd5e1;
+  }
+
+  .poster-table td {
+    padding: 6px 10px;
+    border-bottom: 1px solid #e2e8f0;
+    color: #334155;
+  }
+
+  .poster-table tr:nth-child(even) {
+    background-color: #f8fafc;
+  }
+
+  .poster-el-list {
+    color: #334155;
+    line-height: 1.45;
+  }
+
+  .poster-list {
+    padding-left: 20px;
+  }
+
+  .poster-list li {
+    margin-bottom: 4px;
+  }
+
+  .poster-el-logo {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px dashed #cbd5e1;
+    color: #94a3b8;
+    font-weight: bold;
+    font-size: 0.9em;
+  }
+
+  /* Print Media Query */
+  @media print {
+    body {
+      background: white;
+      padding: 0;
+    }
+    .toolbar {
+      display: none;
+    }
+    .poster-wrapper {
+      box-shadow: none;
+      width: 100% !important;
+      height: 100% !important;
+    }
+  }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <div class="toolbar-title">
+    <span>Infographix Poster Generator</span>
+    <span class="toolbar-badge">Stage 3 Production</span>
+  </div>
+  <div class="toolbar-meta">
+    ID: <strong>adapted_scenario_c_text_heavy_744646965</strong> | Canvas: 1920 × 1484px (landscape) | Elements: 23
+  </div>
+</div>
+
+<div class="poster-wrapper" id="posterCanvas">
+
+        <div class="poster-el poster-el-title"
+             id="el-b_title"
+             data-id="b_title"
+             data-type="title"
+             data-col="hdr"
+             data-group="header"
+             style="left: 47.7px; top: 88.0px; width: 1255.9px; height: 148.4px;; font-size: 48.0pt; font-weight: bold; line-height: 1.2; text-align: left; color: #0f172a; padding: 8px">
+            <h1 class="poster-title-text">Scientific Poster Title</h1>
+        </div>
+        
+
+        <div class="poster-el poster-el-author_info"
+             id="el-b_auth"
+             data-id="b_auth"
+             data-type="author_info"
+             data-col="hdr"
+             data-group="header"
+             style="left: 53.2px; top: 261.7px; width: 1005.8px; height: 38.8px;; font-size: 22.0pt; font-weight: normal; line-height: 1.3; text-align: left; color: #0f172a; padding: 8px">
+            <div class="poster-authors-text">Author Name, Co-Author Name — Research Institute</div>
+        </div>
+        
+
+        <div class="poster-el poster-el-section"
+             id="el-b_sec1_h"
+             data-id="b_sec1_h"
+             data-type="section"
+             data-col="0"
+             data-group="col_0_sec_0"
+             style="left: 67.8px; top: 330.2px; width: 589.0px; height: 49.8px;; font-size: 24.0pt; font-weight: bold; line-height: 1.25; text-align: left; color: #0f172a; padding: 8px">
+            
+            <div class="poster-section-header">
+                <span class="section-bar" style="background-color: #2563eb;"></span>
+                <h2 class="poster-section-text">Section</h2>
+            </div>
+            
+        </div>
+        
+
+        <div class="poster-el poster-el-text"
+             id="el-b_sec1_p"
+             data-id="b_sec1_p"
+             data-type="text"
+             data-col="0"
+             data-group="col_0_sec_0"
+             style="left: 67.8px; top: 388.9px; width: 589.0px; height: 156.8px;; font-size: 16.0pt; font-weight: normal; line-height: 1.38; text-align: left; color: #0f172a; padding: 8px">
+            <p>[Text Content Block]</p>
+        </div>
+        
+
+        <div class="poster-el poster-el-section"
+             id="el-b_sec2_h"
+             data-id="b_sec2_h"
+             data-type="section"
+             data-col="0"
+             data-group="col_0_sec_1"
+             style="left: 67.8px; top: 563.5px; width: 589.0px; height: 49.8px;; font-size: 24.0pt; font-weight: bold; line-height: 1.25; text-align: left; color: #0f172a; padding: 8px">
+            
+            <div class="poster-section-header">
+                <span class="section-bar" style="background-color: #2563eb;"></span>
+                <h2 class="poster-section-text">Section</h2>
+            </div>
+            
+        </div>
+        
+
+        <div class="poster-el poster-el-text"
+             id="el-b_sec2_p"
+             data-id="b_sec2_p"
+             data-type="text"
+             data-col="0"
+             data-group="col_0_sec_1"
+             style="left: 67.8px; top: 622.2px; width: 589.0px; height: 184.3px;; font-size: 16.0pt; font-weight: normal; line-height: 1.38; text-align: left; color: #0f172a; padding: 8px">
+            <p>[Text Content Block]</p>
+        </div>
+        
+
+        <div class="poster-el poster-el-section"
+             id="el-b_sec3_h"
+             data-id="b_sec3_h"
+             data-type="section"
+             data-col="0"
+             data-group="col_0_sec_2"
+             style="left: 67.8px; top: 824.4px; width: 589.0px; height: 49.8px;; font-size: 24.0pt; font-weight: bold; line-height: 1.25; text-align: left; color: #0f172a; padding: 8px">
+            
+            <div class="poster-section-header">
+                <span class="section-bar" style="background-color: #2563eb;"></span>
+                <h2 class="poster-section-text">Section</h2>
+            </div>
+            
+        </div>
+        
+
+        <div class="poster-el poster-el-text"
+             id="el-b_sec3_p"
+             data-id="b_sec3_p"
+             data-type="text"
+             data-col="0"
+             data-group="col_0_sec_2"
+             style="left: 67.8px; top: 883.1px; width: 589.0px; height: 175.7px;; font-size: 16.0pt; font-weight: normal; line-height: 1.38; text-align: left; color: #0f172a; padding: 8px">
+            <p>[Text Content Block]</p>
+        </div>
+        
+
+        <div class="poster-el poster-el-section"
+             id="el-b_sec4_h"
+             data-id="b_sec4_h"
+             data-type="section"
+             data-col="0"
+             data-group="col_0_sec_3"
+             style="left: 67.8px; top: 1076.6px; width: 589.0px; height: 49.8px;; font-size: 24.0pt; font-weight: bold; line-height: 1.25; text-align: left; color: #0f172a; padding: 8px">
+            
+            <div class="poster-section-header">
+                <span class="section-bar" style="background-color: #2563eb;"></span>
+                <h2 class="poster-section-text">Section</h2>
+            </div>
+            
+        </div>
+        
+
+        <div class="poster-el poster-el-text"
+             id="el-b_sec4_p"
+             data-id="b_sec4_p"
+             data-type="text"
+             data-col="0"
+             data-group="col_0_sec_3"
+             style="left: 67.8px; top: 1135.4px; width: 589.0px; height: 203.3px;; font-size: 16.0pt; font-weight: normal; line-height: 1.38; text-align: left; color: #0f172a; padding: 8px">
+            <p>[Text Content Block]</p>
+        </div>
+        
+
+        <div class="poster-el poster-el-section"
+             id="el-b_sec5_h"
+             data-id="b_sec5_h"
+             data-type="section"
+             data-col="1"
+             data-group="col_1_sec_0"
+             style="left: 656.8px; top: 330.2px; width: 589.0px; height: 49.8px;; font-size: 24.0pt; font-weight: bold; line-height: 1.25; text-align: left; color: #0f172a; padding: 8px">
+            
+            <div class="poster-section-header">
+                <span class="section-bar" style="background-color: #2563eb;"></span>
+                <h2 class="poster-section-text">Section</h2>
+            </div>
+            
+        </div>
+        
+
+        <div class="poster-el poster-el-text"
+             id="el-b_sec5_p"
+             data-id="b_sec5_p"
+             data-type="text"
+             data-col="1"
+             data-group="col_1_sec_0"
+             style="left: 656.8px; top: 388.9px; width: 589.0px; height: 203.3px;; font-size: 16.0pt; font-weight: normal; line-height: 1.38; text-align: left; color: #0f172a; padding: 8px">
+            <p>[Text Content Block]</p>
+        </div>
+        
+
+        <div class="poster-el poster-el-section"
+             id="el-b_sec6_h"
+             data-id="b_sec6_h"
+             data-type="section"
+             data-col="1"
+             data-group="col_1_sec_1"
+             style="left: 656.8px; top: 610.0px; width: 589.0px; height: 48.0px;; font-size: 24.0pt; font-weight: bold; line-height: 1.25; text-align: left; color: #0f172a; padding: 8px">
+            
+            <div class="poster-section-header">
+                <span class="section-bar" style="background-color: #2563eb;"></span>
+                <h2 class="poster-section-text">Section</h2>
+            </div>
+            
+        </div>
+        
+
+        <div class="poster-el poster-el-text"
+             id="el-b_sec6_p"
+             data-id="b_sec6_p"
+             data-type="text"
+             data-col="1"
+             data-group="col_1_sec_1"
+             style="left: 656.8px; top: 667.0px; width: 589.0px; height: 184.3px;; font-size: 16.0pt; font-weight: normal; line-height: 1.38; text-align: left; color: #0f172a; padding: 8px">
+            <p>[Text Content Block]</p>
+        </div>
+        
+
+        <div class="poster-el poster-el-section"
+             id="el-b_sec7_h"
+             data-id="b_sec7_h"
+             data-type="section"
+             data-col="1"
+             data-group="col_1_sec_2"
+             style="left: 656.8px; top: 869.1px; width: 589.0px; height: 49.8px;; font-size: 24.0pt; font-weight: bold; line-height: 1.25; text-align: left; color: #0f172a; padding: 8px">
+            
+            <div class="poster-section-header">
+                <span class="section-bar" style="background-color: #2563eb;"></span>
+                <h2 class="poster-section-text">Section</h2>
+            </div>
+            
+        </div>
+        
+
+        <div class="poster-el poster-el-text"
+             id="el-b_sec7_p"
+             data-id="b_sec7_p"
+             data-type="text"
+             data-col="1"
+             data-group="col_1_sec_2"
+             style="left: 656.8px; top: 927.8px; width: 589.0px; height: 156.8px;; font-size: 16.0pt; font-weight: normal; line-height: 1.38; text-align: left; color: #0f172a; padding: 8px">
+            <p>[Text Content Block]</p>
+        </div>
+        
+
+        <div class="poster-el poster-el-section"
+             id="el-b_sec8_h"
+             data-id="b_sec8_h"
+             data-type="section"
+             data-col="1"
+             data-group="col_1_sec_3"
+             style="left: 656.8px; top: 1102.4px; width: 589.0px; height: 43.4px;; font-size: 24.0pt; font-weight: bold; line-height: 1.25; text-align: left; color: #0f172a; padding: 8px">
+            
+            <div class="poster-section-header">
+                <span class="section-bar" style="background-color: #2563eb;"></span>
+                <h2 class="poster-section-text">Section</h2>
+            </div>
+            
+        </div>
+        
+
+        <div class="poster-el poster-el-text"
+             id="el-b_sec8_p"
+             data-id="b_sec8_p"
+             data-type="text"
+             data-col="1"
+             data-group="col_1_sec_3"
+             style="left: 656.8px; top: 1154.7px; width: 589.0px; height: 137.8px;; font-size: 16.0pt; font-weight: normal; line-height: 1.38; text-align: left; color: #0f172a; padding: 8px">
+            <p>[Text Content Block]</p>
+        </div>
+        
+
+        <div class="poster-el poster-el-table"
+             id="el-b_tab1"
+             data-id="b_tab1"
+             data-type="table"
+             data-col="1"
+             data-group="col_1_sec_4"
+             style="left: 656.8px; top: 1310.3px; width: 589.0px; height: 114.3px;; font-size: 16.0pt; font-weight: normal; line-height: 1.25; text-align: left; padding: 8px">
+            <table class="poster-table"><thead><tr><th>Variable</th><th>Observed</th><th>Expected</th><th>p-value</th></tr></thead><tbody><tr><td>Factor A</td><td>45.2 ± 3.1</td><td>40.0</td><td>0.012</td></tr><tr><td>Factor B</td><td>128.4 ± 8.7</td><td>120.0</td><td>&lt; 0.001</td></tr><tr><td>Control</td><td>12.1 ± 1.4</td><td>12.0</td><td>0.850</td></tr></tbody></table>
+        </div>
+        
+
+        <div class="poster-el poster-el-figure"
+             id="el-b_fig1"
+             data-id="b_fig1"
+             data-type="figure"
+             data-col="2"
+             data-group="col_2_sec_0"
+             style="left: 1245.8px; top: 330.2px; width: 608.2px; height: 405.6px;; font-size: 16.0pt; font-weight: normal; line-height: 1.38; text-align: left; padding: 8px">
+            
+    <div class="figure-placeholder">
+        <svg viewBox="0 0 608 405" preserveAspectRatio="xMidYMid meet" class="figure-svg">
+            <rect width="100%" height="100%" fill="#f8fafc" rx="6" />
+            <rect x="2" y="2" width="604" height="401" fill="none" stroke="#e2e8f0" stroke-width="1.5" stroke-dasharray="4 4" rx="5" />
+            <circle cx="182.4" cy="162.0" r="72.89999999999999" fill="#0284c7" opacity="0.15" />
+            <circle cx="395.2" cy="202.5" r="89.1" fill="#0284c7" opacity="0.10" />
+            <path d="M 91.2 303.75 Q 243.20000000000002 141.75 364.8 243.0 T 516.8 121.5" fill="none" stroke="#0284c7" stroke-width="2.5" />
+            <text x="304.0" y="208.5" font-family="system-ui, sans-serif" font-size="28" fill="#475569" font-weight="600" text-anchor="middle">[Figure Content Block]</text>
+        </svg>
+    </div>
+    
+        </div>
+        
+
+        <div class="poster-el poster-el-caption"
+             id="el-b_cap1"
+             data-id="b_cap1"
+             data-type="caption"
+             data-col="2"
+             data-group="col_2_sec_0"
+             style="left: 1245.8px; top: 747.7px; width: 608.2px; height: 39.1px;; font-size: 13.5pt; font-weight: normal; line-height: 1.3; text-align: left; color: #475569; padding: 8px">
+            <div class="poster-caption-text"><em>[Caption Content Block]</em></div>
+        </div>
+        
+
+        <div class="poster-el poster-el-figure"
+             id="el-b_fig2"
+             data-id="b_fig2"
+             data-type="figure"
+             data-col="2"
+             data-group="col_2_sec_1"
+             style="left: 1245.8px; top: 804.6px; width: 608.2px; height: 434.5px;; font-size: 16.0pt; font-weight: normal; line-height: 1.38; text-align: left; padding: 8px">
+            
+    <div class="figure-placeholder">
+        <svg viewBox="0 0 608 434" preserveAspectRatio="xMidYMid meet" class="figure-svg">
+            <rect width="100%" height="100%" fill="#f8fafc" rx="6" />
+            <rect x="2" y="2" width="604" height="430" fill="none" stroke="#e2e8f0" stroke-width="1.5" stroke-dasharray="4 4" rx="5" />
+            <circle cx="182.4" cy="173.60000000000002" r="78.11999999999999" fill="#0284c7" opacity="0.15" />
+            <circle cx="395.2" cy="217.0" r="95.48" fill="#0284c7" opacity="0.10" />
+            <path d="M 91.2 325.5 Q 243.20000000000002 151.89999999999998 364.8 260.4 T 516.8 130.2" fill="none" stroke="#0284c7" stroke-width="2.5" />
+            <text x="304.0" y="223.0" font-family="system-ui, sans-serif" font-size="30" fill="#475569" font-weight="600" text-anchor="middle">[Figure Content Block]</text>
+        </svg>
+    </div>
+    
+        </div>
+        
+
+        <div class="poster-el poster-el-caption"
+             id="el-b_cap2"
+             data-id="b_cap2"
+             data-type="caption"
+             data-col="2"
+             data-group="col_2_sec_1"
+             style="left: 1245.8px; top: 1251.0px; width: 608.2px; height: 39.1px;; font-size: 13.5pt; font-weight: normal; line-height: 1.3; text-align: left; color: #475569; padding: 8px">
+            <div class="poster-caption-text"><em>[Caption Content Block]</em></div>
+        </div>
+        
+</div>
+
+</body>
+</html>

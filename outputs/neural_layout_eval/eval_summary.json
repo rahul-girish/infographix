@@ -1,0 +1,52 @@
+{
+  "training_history": {},
+  "sample_results": [
+    {
+      "sample_idx": 1,
+      "target_poster_id": 194056279,
+      "template_poster_id": 2581351524,
+      "num_elements": 30,
+      "num_template_slots": 27,
+      "mean_iou_vs_gt": 0.0198,
+      "figure_path": "/home/rahul/Projects/infographix/outputs/neural_layout_eval/eval_sample_1_pid_194056279.png"
+    },
+    {
+      "sample_idx": 2,
+      "target_poster_id": 1001519623,
+      "template_poster_id": 407709001,
+      "num_elements": 26,
+      "num_template_slots": 22,
+      "mean_iou_vs_gt": 0.0286,
+      "figure_path": "/home/rahul/Projects/infographix/outputs/neural_layout_eval/eval_sample_2_pid_1001519623.png"
+    },
+    {
+      "sample_idx": 3,
+      "target_poster_id": 1754103935,
+      "template_poster_id": 407709001,
+      "num_elements": 17,
+      "num_template_slots": 22,
+      "mean_iou_vs_gt": 0.0395,
+      "figure_path": "/home/rahul/Projects/infographix/outputs/neural_layout_eval/eval_sample_3_pid_1754103935.png"
+    },
+    {
+      "sample_idx": 4,
+      "target_poster_id": 1801294141,
+      "template_poster_id": 407709001,
+      "num_elements": 17,
+      "num_template_slots": 22,
+      "mean_iou_vs_gt": 0.0356,
+      "figure_path": "/home/rahul/Projects/infographix/outputs/neural_layout_eval/eval_sample_4_pid_1801294141.png"
+    },
+    {
+      "sample_idx": 5,
+      "target_poster_id": 1919319269,
+      "template_poster_id": 3363575395,
+      "num_elements": 17,
+      "num_template_slots": 14,
+      "mean_iou_vs_gt": 0.0373,
+      "figure_path": "/home/rahul/Projects/infographix/outputs/neural_layout_eval/eval_sample_5_pid_1919319269.png"
+    }
+  ],
+  "total_trainable_parameters": 1513871,
+  "training_time_seconds": 213.5
+}

@@ -1,0 +1,948 @@
+{
+  "poster_id": "adapted_scenario_c_text_heavy_744646965",
+  "source_template_id": 744646965,
+  "canvas": {
+    "width": 1920,
+    "height": 1484,
+    "unit": "px",
+    "dpi": 150,
+    "background_color": "#ffffff",
+    "margin_px": 36
+  },
+  "elements": [
+    {
+      "id": "b_title",
+      "type": "title",
+      "bbox": [
+        47.68,
+        88.02,
+        1255.93,
+        148.4
+      ],
+      "bbox_norm": [
+        0.0248,
+        0.0593,
+        0.6541,
+        0.1
+      ],
+      "content": "Scientific Poster Title",
+      "style": {
+        "font_family": "Inter, system-ui, sans-serif",
+        "font_size_pt": 48.0,
+        "font_weight": "bold",
+        "line_height": 1.2,
+        "text_color": "#0f172a",
+        "background_color": "transparent",
+        "border_color": "transparent",
+        "border_width_px": 0,
+        "border_radius_px": 4,
+        "padding_px": 8,
+        "text_align": "left",
+        "opacity": 1.0,
+        "shadow": false
+      },
+      "group_id": "header",
+      "column_idx": null,
+      "source_block_id": "b_title",
+      "associated_element_ids": [],
+      "metadata": {
+        "priority": 1.0,
+        "is_split_slot": false
+      }
+    },
+    {
+      "id": "b_auth",
+      "type": "author_info",
+      "bbox": [
+        53.16,
+        261.7,
+        1005.78,
+        38.84
+      ],
+      "bbox_norm": [
+        0.0277,
+        0.1763,
+        0.5238,
+        0.0262
+      ],
+      "content": "Author Name, Co-Author Name \u2014 Research Institute",
+      "style": {
+        "font_family": "Inter, system-ui, sans-serif",
+        "font_size_pt": 22.0,
+        "font_weight": "normal",
+        "line_height": 1.3,
+        "text_color": "#0f172a",
+        "background_color": "transparent",
+        "border_color": "transparent",
+        "border_width_px": 0,
+        "border_radius_px": 4,
+        "padding_px": 8,
+        "text_align": "left",
+        "opacity": 1.0,
+        "shadow": false
+      },
+      "group_id": "header",
+      "column_idx": null,
+      "source_block_id": "b_auth",
+      "associated_element_ids": [],
+      "metadata": {
+        "priority": 1.0,
+        "is_split_slot": false
+      }
+    },
+    {
+      "id": "b_sec1_h",
+      "type": "section",
+      "bbox": [
+        67.79,
+        330.22,
+        589.01,
+        49.81
+      ],
+      "bbox_norm": [
+        0.0353,
+        0.2225,
+        0.3068,
+        0.0336
+      ],
+      "content": "Section",
+      "style": {
+        "font_family": "Inter, system-ui, sans-serif",
+        "font_size_pt": 24.0,
+        "font_weight": "bold",
+        "line_height": 1.25,
+        "text_color": "#0f172a",
+        "background_color": "transparent",
+        "border_color": "transparent",
+        "border_width_px": 0,
+        "border_radius_px": 4,
+        "padding_px": 8,
+        "text_align": "left",
+        "opacity": 1.0,
+        "shadow": false
+      },
+      "group_id": "col_0_sec_0",
+      "column_idx": 0,
+      "source_block_id": "b_sec1_h",
+      "associated_element_ids": [],
+      "metadata": {
+        "priority": 1.0,
+        "is_split_slot": false
+      }
+    },
+    {
+      "id": "b_sec1_p",
+      "type": "text",
+      "bbox": [
+        67.79,
+        388.93,
+        589.01,
+        156.78
+      ],
+      "bbox_norm": [
+        0.0353,
+        0.2621,
+        0.3068,
+        0.1056
+      ],
+      "content": "[Text Content Block]",
+      "style": {
+        "font_family": "Inter, system-ui, sans-serif",
+        "font_size_pt": 16.0,
+        "font_weight": "normal",
+        "line_height": 1.38,
+        "text_color": "#0f172a",
+        "background_color": "transparent",
+        "border_color": "transparent",
+        "border_width_px": 0,
+        "border_radius_px": 4,
+        "padding_px": 8,
+        "text_align": "left",
+        "opacity": 1.0,
+        "shadow": false
+      },
+      "group_id": "col_0_sec_0",
+      "column_idx": 0,
+      "source_block_id": "b_sec1_p",
+      "associated_element_ids": [],
+      "metadata": {
+        "priority": 1.0,
+        "is_split_slot": false
+      }
+    },
+    {
+      "id": "b_sec2_h",
+      "type": "section",
+      "bbox": [
+        67.79,
+        563.52,
+        589.01,
+        49.81
+      ],
+      "bbox_norm": [
+        0.0353,
+        0.3797,
+        0.3068,
+        0.0336
+      ],
+      "content": "Section",
+      "style": {
+        "font_family": "Inter, system-ui, sans-serif",
+        "font_size_pt": 24.0,
+        "font_weight": "bold",
+        "line_height": 1.25,
+        "text_color": "#0f172a",
+        "background_color": "transparent",
+        "border_color": "transparent",
+        "border_width_px": 0,
+        "border_radius_px": 4,
+        "padding_px": 8,
+        "text_align": "left",
+        "opacity": 1.0,
+        "shadow": false
+      },
+      "group_id": "col_0_sec_1",
+      "column_idx": 0,
+      "source_block_id": "b_sec2_h",
+      "associated_element_ids": [],
+      "metadata": {
+        "priority": 1.0,
+        "is_split_slot": false
+      }
+    },
+    {
+      "id": "b_sec2_p",
+      "type": "text",
+      "bbox": [
+        67.79,
+        622.24,
+        589.01,
+        184.33
+      ],
+      "bbox_norm": [
+        0.0353,
+        0.4193,
+        0.3068,
+        0.1242
+      ],
+      "content": "[Text Content Block]",
+      "style": {
+        "font_family": "Inter, system-ui, sans-serif",
+        "font_size_pt": 16.0,
+        "font_weight": "normal",
+        "line_height": 1.38,
+        "text_color": "#0f172a",
+        "background_color": "transparent",
+        "border_color": "transparent",
+        "border_width_px": 0,
+        "border_radius_px": 4,
+        "padding_px": 8,
+        "text_align": "left",
+        "opacity": 1.0,
+        "shadow": false
+      },
+      "group_id": "col_0_sec_1",
+      "column_idx": 0,
+      "source_block_id": "b_sec2_p",
+      "associated_element_ids": [],
+      "metadata": {
+        "priority": 1.0,
+        "is_split_slot": false
+      }
+    },
+    {
+      "id": "b_sec3_h",
+      "type": "section",
+      "bbox": [
+        67.79,
+        824.38,
+        589.01,
+        49.81
+      ],
+      "bbox_norm": [
+        0.0353,
+        0.5555,
+        0.3068,
+        0.0336
+      ],
+      "content": "Section",
+      "style": {
+        "font_family": "Inter, system-ui, sans-serif",
+        "font_size_pt": 24.0,
+        "font_weight": "bold",
+        "line_height": 1.25,
+        "text_color": "#0f172a",
+        "background_color": "transparent",
+        "border_color": "transparent",
+        "border_width_px": 0,
+        "border_radius_px": 4,
+        "padding_px": 8,
+        "text_align": "left",
+        "opacity": 1.0,
+        "shadow": false
+      },
+      "group_id": "col_0_sec_2",
+      "column_idx": 0,
+      "source_block_id": "b_sec3_h",
+      "associated_element_ids": [],
+      "metadata": {
+        "priority": 1.0,
+        "is_split_slot": false
+      }
+    },
+    {
+      "id": "b_sec3_p",
+      "type": "text",
+      "bbox": [
+        67.79,
+        883.09,
+        589.01,
+        175.74
+      ],
+      "bbox_norm": [
+        0.0353,
+        0.5951,
+        0.3068,
+        0.1184
+      ],
+      "content": "[Text Content Block]",
+      "style": {
+        "font_family": "Inter, system-ui, sans-serif",
+        "font_size_pt": 16.0,
+        "font_weight": "normal",
+        "line_height": 1.38,
+        "text_color": "#0f172a",
+        "background_color": "transparent",
+        "border_color": "transparent",
+        "border_width_px": 0,
+        "border_radius_px": 4,
+        "padding_px": 8,
+        "text_align": "left",
+        "opacity": 1.0,
+        "shadow": false
+      },
+      "group_id": "col_0_sec_2",
+      "column_idx": 0,
+      "source_block_id": "b_sec3_p",
+      "associated_element_ids": [],
+      "metadata": {
+        "priority": 1.0,
+        "is_split_slot": false
+      }
+    },
+    {
+      "id": "b_sec4_h",
+      "type": "section",
+      "bbox": [
+        67.79,
+        1076.64,
+        589.01,
+        49.81
+      ],
+      "bbox_norm": [
+        0.0353,
+        0.7255,
+        0.3068,
+        0.0336
+      ],
+      "content": "Section",
+      "style": {
+        "font_family": "Inter, system-ui, sans-serif",
+        "font_size_pt": 24.0,
+        "font_weight": "bold",
+        "line_height": 1.25,
+        "text_color": "#0f172a",
+        "background_color": "transparent",
+        "border_color": "transparent",
+        "border_width_px": 0,
+        "border_radius_px": 4,
+        "padding_px": 8,
+        "text_align": "left",
+        "opacity": 1.0,
+        "shadow": false
+      },
+      "group_id": "col_0_sec_3",
+      "column_idx": 0,
+      "source_block_id": "b_sec4_h",
+      "associated_element_ids": [],
+      "metadata": {
+        "priority": 1.0,
+        "is_split_slot": false
+      }
+    },
+    {
+      "id": "b_sec4_p",
+      "type": "text",
+      "bbox": [
+        67.79,
+        1135.36,
+        589.01,
+        203.29
+      ],
+      "bbox_norm": [
+        0.0353,
+        0.7651,
+        0.3068,
+        0.137
+      ],
+      "content": "[Text Content Block]",
+      "style": {
+        "font_family": "Inter, system-ui, sans-serif",
+        "font_size_pt": 16.0,
+        "font_weight": "normal",
+        "line_height": 1.38,
+        "text_color": "#0f172a",
+        "background_color": "transparent",
+        "border_color": "transparent",
+        "border_width_px": 0,
+        "border_radius_px": 4,
+        "padding_px": 8,
+        "text_align": "left",
+        "opacity": 1.0,
+        "shadow": false
+      },
+      "group_id": "col_0_sec_3",
+      "column_idx": 0,
+      "source_block_id": "b_sec4_p",
+      "associated_element_ids": [],
+      "metadata": {
+        "priority": 1.0,
+        "is_split_slot": true
+      }
+    },
+    {
+      "id": "b_sec5_h",
+      "type": "section",
+      "bbox": [
+        656.79,
+        330.22,
+        589.01,
+        49.81
+      ],
+      "bbox_norm": [
+        0.3421,
+        0.2225,
+        0.3068,
+        0.0336
+      ],
+      "content": "Section",
+      "style": {
+        "font_family": "Inter, system-ui, sans-serif",
+        "font_size_pt": 24.0,
+        "font_weight": "bold",
+        "line_height": 1.25,
+        "text_color": "#0f172a",
+        "background_color": "transparent",
+        "border_color": "transparent",
+        "border_width_px": 0,
+        "border_radius_px": 4,
+        "padding_px": 8,
+        "text_align": "left",
+        "opacity": 1.0,
+        "shadow": false
+      },
+      "group_id": "col_1_sec_0",
+      "column_idx": 1,
+      "source_block_id": "b_sec5_h",
+      "associated_element_ids": [],
+      "metadata": {
+        "priority": 1.0,
+        "is_split_slot": false
+      }
+    },
+    {
+      "id": "b_sec5_p",
+      "type": "text",
+      "bbox": [
+        656.79,
+        388.93,
+        589.01,
+        203.29
+      ],
+      "bbox_norm": [
+        0.3421,
+        0.2621,
+        0.3068,
+        0.137
+      ],
+      "content": "[Text Content Block]",
+      "style": {
+        "font_family": "Inter, system-ui, sans-serif",
+        "font_size_pt": 16.0,
+        "font_weight": "normal",
+        "line_height": 1.38,
+        "text_color": "#0f172a",
+        "background_color": "transparent",
+        "border_color": "transparent",
+        "border_width_px": 0,
+        "border_radius_px": 4,
+        "padding_px": 8,
+        "text_align": "left",
+        "opacity": 1.0,
+        "shadow": false
+      },
+      "group_id": "col_1_sec_0",
+      "column_idx": 1,
+      "source_block_id": "b_sec5_p",
+      "associated_element_ids": [],
+      "metadata": {
+        "priority": 1.0,
+        "is_split_slot": false
+      }
+    },
+    {
+      "id": "b_sec6_h",
+      "type": "section",
+      "bbox": [
+        656.79,
+        610.03,
+        589.01,
+        48.03
+      ],
+      "bbox_norm": [
+        0.3421,
+        0.4111,
+        0.3068,
+        0.0324
+      ],
+      "content": "Section",
+      "style": {
+        "font_family": "Inter, system-ui, sans-serif",
+        "font_size_pt": 24.0,
+        "font_weight": "bold",
+        "line_height": 1.25,
+        "text_color": "#0f172a",
+        "background_color": "transparent",
+        "border_color": "transparent",
+        "border_width_px": 0,
+        "border_radius_px": 4,
+        "padding_px": 8,
+        "text_align": "left",
+        "opacity": 1.0,
+        "shadow": false
+      },
+      "group_id": "col_1_sec_1",
+      "column_idx": 1,
+      "source_block_id": "b_sec6_h",
+      "associated_element_ids": [],
+      "metadata": {
+        "priority": 1.0,
+        "is_split_slot": false
+      }
+    },
+    {
+      "id": "b_sec6_p",
+      "type": "text",
+      "bbox": [
+        656.79,
+        666.96,
+        589.01,
+        184.33
+      ],
+      "bbox_norm": [
+        0.3421,
+        0.4494,
+        0.3068,
+        0.1242
+      ],
+      "content": "[Text Content Block]",
+      "style": {
+        "font_family": "Inter, system-ui, sans-serif",
+        "font_size_pt": 16.0,
+        "font_weight": "normal",
+        "line_height": 1.38,
+        "text_color": "#0f172a",
+        "background_color": "transparent",
+        "border_color": "transparent",
+        "border_width_px": 0,
+        "border_radius_px": 4,
+        "padding_px": 8,
+        "text_align": "left",
+        "opacity": 1.0,
+        "shadow": false
+      },
+      "group_id": "col_1_sec_1",
+      "column_idx": 1,
+      "source_block_id": "b_sec6_p",
+      "associated_element_ids": [],
+      "metadata": {
+        "priority": 1.0,
+        "is_split_slot": false
+      }
+    },
+    {
+      "id": "b_sec7_h",
+      "type": "section",
+      "bbox": [
+        656.79,
+        869.1,
+        589.01,
+        49.81
+      ],
+      "bbox_norm": [
+        0.3421,
+        0.5856,
+        0.3068,
+        0.0336
+      ],
+      "content": "Section",
+      "style": {
+        "font_family": "Inter, system-ui, sans-serif",
+        "font_size_pt": 24.0,
+        "font_weight": "bold",
+        "line_height": 1.25,
+        "text_color": "#0f172a",
+        "background_color": "transparent",
+        "border_color": "transparent",
+        "border_width_px": 0,
+        "border_radius_px": 4,
+        "padding_px": 8,
+        "text_align": "left",
+        "opacity": 1.0,
+        "shadow": false
+      },
+      "group_id": "col_1_sec_2",
+      "column_idx": 1,
+      "source_block_id": "b_sec7_h",
+      "associated_element_ids": [],
+      "metadata": {
+        "priority": 1.0,
+        "is_split_slot": false
+      }
+    },
+    {
+      "id": "b_sec7_p",
+      "type": "text",
+      "bbox": [
+        656.79,
+        927.82,
+        589.01,
+        156.78
+      ],
+      "bbox_norm": [
+        0.3421,
+        0.6252,
+        0.3068,
+        0.1056
+      ],
+      "content": "[Text Content Block]",
+      "style": {
+        "font_family": "Inter, system-ui, sans-serif",
+        "font_size_pt": 16.0,
+        "font_weight": "normal",
+        "line_height": 1.38,
+        "text_color": "#0f172a",
+        "background_color": "transparent",
+        "border_color": "transparent",
+        "border_width_px": 0,
+        "border_radius_px": 4,
+        "padding_px": 8,
+        "text_align": "left",
+        "opacity": 1.0,
+        "shadow": false
+      },
+      "group_id": "col_1_sec_2",
+      "column_idx": 1,
+      "source_block_id": "b_sec7_p",
+      "associated_element_ids": [],
+      "metadata": {
+        "priority": 1.0,
+        "is_split_slot": false
+      }
+    },
+    {
+      "id": "b_sec8_h",
+      "type": "section",
+      "bbox": [
+        656.79,
+        1102.41,
+        589.01,
+        43.37
+      ],
+      "bbox_norm": [
+        0.3421,
+        0.7429,
+        0.3068,
+        0.0292
+      ],
+      "content": "Section",
+      "style": {
+        "font_family": "Inter, system-ui, sans-serif",
+        "font_size_pt": 24.0,
+        "font_weight": "bold",
+        "line_height": 1.25,
+        "text_color": "#0f172a",
+        "background_color": "transparent",
+        "border_color": "transparent",
+        "border_width_px": 0,
+        "border_radius_px": 4,
+        "padding_px": 8,
+        "text_align": "left",
+        "opacity": 1.0,
+        "shadow": false
+      },
+      "group_id": "col_1_sec_3",
+      "column_idx": 1,
+      "source_block_id": "b_sec8_h",
+      "associated_element_ids": [],
+      "metadata": {
+        "priority": 1.0,
+        "is_split_slot": true
+      }
+    },
+    {
+      "id": "b_sec8_p",
+      "type": "text",
+      "bbox": [
+        656.79,
+        1154.68,
+        589.01,
+        137.82
+      ],
+      "bbox_norm": [
+        0.3421,
+        0.7781,
+        0.3068,
+        0.0929
+      ],
+      "content": "[Text Content Block]",
+      "style": {
+        "font_family": "Inter, system-ui, sans-serif",
+        "font_size_pt": 16.0,
+        "font_weight": "normal",
+        "line_height": 1.38,
+        "text_color": "#0f172a",
+        "background_color": "transparent",
+        "border_color": "transparent",
+        "border_width_px": 0,
+        "border_radius_px": 4,
+        "padding_px": 8,
+        "text_align": "left",
+        "opacity": 1.0,
+        "shadow": false
+      },
+      "group_id": "col_1_sec_3",
+      "column_idx": 1,
+      "source_block_id": "b_sec8_p",
+      "associated_element_ids": [],
+      "metadata": {
+        "priority": 1.0,
+        "is_split_slot": true
+      }
+    },
+    {
+      "id": "b_tab1",
+      "type": "table",
+      "bbox": [
+        656.79,
+        1310.31,
+        589.01,
+        114.33
+      ],
+      "bbox_norm": [
+        0.3421,
+        0.883,
+        0.3068,
+        0.077
+      ],
+      "content": "[Table Content Block]",
+      "style": {
+        "font_family": "Inter, system-ui, sans-serif",
+        "font_size_pt": 16.0,
+        "font_weight": "normal",
+        "line_height": 1.25,
+        "text_color": "#0f172a",
+        "background_color": "#f1f5f9",
+        "border_color": "#cbd5e1",
+        "border_width_px": 1,
+        "border_radius_px": 4,
+        "padding_px": 8,
+        "text_align": "left",
+        "opacity": 1.0,
+        "shadow": false
+      },
+      "group_id": "col_1_sec_4",
+      "column_idx": 1,
+      "source_block_id": "b_tab1",
+      "associated_element_ids": [],
+      "metadata": {
+        "priority": 1.0,
+        "is_split_slot": true
+      }
+    },
+    {
+      "id": "b_fig1",
+      "type": "figure",
+      "bbox": [
+        1245.8,
+        330.22,
+        608.21,
+        405.57
+      ],
+      "bbox_norm": [
+        0.6489,
+        0.2225,
+        0.3168,
+        0.2733
+      ],
+      "content": "[Figure Content Block]",
+      "style": {
+        "font_family": "Inter, system-ui, sans-serif",
+        "font_size_pt": 16.0,
+        "font_weight": "normal",
+        "line_height": 1.38,
+        "text_color": "#0f172a",
+        "background_color": "#f1f5f9",
+        "border_color": "#cbd5e1",
+        "border_width_px": 1,
+        "border_radius_px": 4,
+        "padding_px": 8,
+        "text_align": "left",
+        "opacity": 1.0,
+        "shadow": false
+      },
+      "group_id": "col_2_sec_0",
+      "column_idx": 2,
+      "source_block_id": "b_fig1",
+      "associated_element_ids": [],
+      "metadata": {
+        "priority": 1.0,
+        "is_split_slot": false
+      }
+    },
+    {
+      "id": "b_cap1",
+      "type": "caption",
+      "bbox": [
+        1245.8,
+        747.66,
+        608.21,
+        39.12
+      ],
+      "bbox_norm": [
+        0.6489,
+        0.5038,
+        0.3168,
+        0.0264
+      ],
+      "content": "[Caption Content Block]",
+      "style": {
+        "font_family": "Inter, system-ui, sans-serif",
+        "font_size_pt": 13.5,
+        "font_weight": "normal",
+        "line_height": 1.3,
+        "text_color": "#475569",
+        "background_color": "transparent",
+        "border_color": "transparent",
+        "border_width_px": 0,
+        "border_radius_px": 4,
+        "padding_px": 8,
+        "text_align": "left",
+        "opacity": 1.0,
+        "shadow": false
+      },
+      "group_id": "col_2_sec_0",
+      "column_idx": 2,
+      "source_block_id": "b_cap1",
+      "associated_element_ids": [
+        "b_fig1"
+      ],
+      "metadata": {
+        "priority": 1.0,
+        "is_split_slot": true
+      }
+    },
+    {
+      "id": "b_fig2",
+      "type": "figure",
+      "bbox": [
+        1245.8,
+        804.59,
+        608.21,
+        434.54
+      ],
+      "bbox_norm": [
+        0.6489,
+        0.5422,
+        0.3168,
+        0.2928
+      ],
+      "content": "[Figure Content Block]",
+      "style": {
+        "font_family": "Inter, system-ui, sans-serif",
+        "font_size_pt": 16.0,
+        "font_weight": "normal",
+        "line_height": 1.38,
+        "text_color": "#0f172a",
+        "background_color": "#f1f5f9",
+        "border_color": "#cbd5e1",
+        "border_width_px": 1,
+        "border_radius_px": 4,
+        "padding_px": 8,
+        "text_align": "left",
+        "opacity": 1.0,
+        "shadow": false
+      },
+      "group_id": "col_2_sec_1",
+      "column_idx": 2,
+      "source_block_id": "b_fig2",
+      "associated_element_ids": [],
+      "metadata": {
+        "priority": 1.0,
+        "is_split_slot": false
+      }
+    },
+    {
+      "id": "b_cap2",
+      "type": "caption",
+      "bbox": [
+        1245.8,
+        1251.0,
+        608.21,
+        39.12
+      ],
+      "bbox_norm": [
+        0.6489,
+        0.843,
+        0.3168,
+        0.0264
+      ],
+      "content": "[Caption Content Block]",
+      "style": {
+        "font_family": "Inter, system-ui, sans-serif",
+        "font_size_pt": 13.5,
+        "font_weight": "normal",
+        "line_height": 1.3,
+        "text_color": "#475569",
+        "background_color": "transparent",
+        "border_color": "transparent",
+        "border_width_px": 0,
+        "border_radius_px": 4,
+        "padding_px": 8,
+        "text_align": "left",
+        "opacity": 1.0,
+        "shadow": false
+      },
+      "group_id": "col_2_sec_1",
+      "column_idx": 2,
+      "source_block_id": "b_cap2",
+      "associated_element_ids": [
+        "b_fig2"
+      ],
+      "metadata": {
+        "priority": 1.0,
+        "is_split_slot": true
+      }
+    }
+  ],
+  "title": "Scientific Poster",
+  "authors": [
+    "Research Authors"
+  ],
+  "affiliations": [],
+  "metadata": {
+    "template_aspect_ratio": 1.2941176470588236,
+    "composite_quality_score": 99.6,
+    "candidate_rank": 4
+  }
+}
