@@ -1,14 +1,94 @@
+# Infographix 📊
+
+> **AI-Powered Technical Poster and Infographic Generator**  
+> An automated platform for students, researchers, and academics to transform research papers into customizable, publication-grade technical posters.
+
+---
+
+## 🏗️ Architecture & Core Components
+
+1. **COCO Data Schema (`src/schemas/coco.py`)**:
+   - Universal data interchange format connecting PDF document extraction, template libraries, and the frontend visual canvas editor.
+2. **DBSCAN Layout Clustering (`src/clustering/dbscan_clustering.py`)**:
+   - **Macro-level**: PCA (15 components) + DBSCAN discovers coherent layout archetypes and isolates irregular designs as noise (`-1`).
+   - **Micro-level**: 2D anisotropic spatial DBSCAN groups scattered text fragments into columns and pairs figures with captions.
+3. **Experiment Tracking**:
+   - Tracked using **Aim** (with local JSON fallback via `src/tracking/tracker.py`).
+4. **Model Registry (`src/registry/model_registry.py`)**:
+   - Version-controlled, immutable model storage managing lifecycle stages (`development`, `staging`, `production`, `archived`).
+   - Currently registered in production: `poster_layout_clusterer` (`v1.0.0`).
+
+---
+
+## 🚀 Quickstart: Using the Production Model Registry
+
+### Load the Active Production Model in FastAPI / Python
+```python
+from src.registry.model_registry import ModelRegistry
+
+registry = ModelRegistry()
+
+# 1. Load active production model, preprocessor, and metadata manifest
+model, preprocessor, manifest = registry.load_production_model("poster_layout_clusterer")
+
+print(f"Loaded: {manifest.model_name} ({manifest.version})")
+print(f"Stage: {manifest.stage}")
+print(f"Metrics: Train Silhouette={manifest.metrics['train_silhouette']:.4f}")
+
+# 2. Run inference on extracted paper features
+# raw_features: 2D array matching feature_schema.json (92 columns)
+scaled_features = preprocessor.transform(raw_features)
+cluster_id = model.predict(scaled_features)
+# cluster_id = 0, 1... (assigned archetype) or -1 (noise/outlier)
+```
+
+### Inspect the Registry
+```python
+from src.registry.model_registry import ModelRegistry
+
+registry = ModelRegistry()
+overview = registry.list_models()
+print(overview)
+```
+
+### Register / Re-train a Production Model
+```bash
+python src/registry/register_production_model.py
+```
+
+### Run Benchmarks & Model Comparisons
+```bash
+python src/clustering/comparison.py
+```
+Outputs are written to `reports/comparisons/clustering_comparison.csv` and `reports/comparisons/clustering_comparison_report.md`.
+
+### Run Unit Tests
+```bash
+python -c "
+import src.test_coco_dbscan as t1
+import src.test_model_registry as t2
+t1.test_coco_data_models_and_validation()
+t1.test_convert_extracted_document_to_coco()
+t1.test_canvas_to_coco_conversion()
+t1.test_poster_layout_dbscan_clustering()
+t1.test_spatial_block_dbscan_and_pairing()
+t2.test_model_registry_lifecycle()
+print('All tests passed!')
+"
+```
+
+---
+
 ## Setup and Environment
 
-Operating System: Ubuntu 24.04
-On windows use WSL2.
+Operating System: Ubuntu 24.04 (On Windows use WSL2).
 
 Run the following command in powershell as an administrator:
 ```bash
 wsl --install -d Ubuntu-24.04
 ```
 
-Install the following in your Ubuntu environment.
+Install the following in your Ubuntu environment:
 
 Install python
 ```bash
@@ -65,7 +145,6 @@ jupyter lab
 ```
 Go to the url shown in the terminal, or go to http://localhost:8888/lab.
 Open a notebook, set the kernel to infographix-venv, and run something to test that it's working.
-Also test whether when you use the default python-3 kernel, you get a `ModuleNotFoundError` when you try to import a library (for example, `tqdm`).
 
 **Before every commit, make sure to update requirements.txt**
 **Make sure you are in the activated virtual environment before running this:**
@@ -73,33 +152,25 @@ Also test whether when you use the default python-3 kernel, you get a `ModuleNot
 uv pip freeze > requirements.txt
 ```
 
-**The below commands are not to be run**
+---
+
+## DVC Setup Notes
 
 Note that all DVC commands can only be run from within the virtual environment.
-Initialize DVC
+
+Initialize DVC:
 ```bash
 dvc init
 ```
 
-In Google Drive, create a folder. Copy the folder ID (The part of the URL that comes after `folder/`). Then,
+Configure Google Drive Remote:
 ```bash
 dvc remote add --default gdrive gdrive://folder_id
-```
-Check if it was configured:
-```bash
 dvc remote list
 ```
 
-Now, I faced some issues with dependencies. There was a version mismatch between PyOpenSSL and cryptography, and I spent a painfully long time trying to fix it. In the end, I had to remove my installation of DVC and install afresh using pip.
-
-Then there came an authentication error from Google Auth. When using Google Drive as a remote, DVC requests the `drive.files` OAuth scope, which Google changed their policy about and is now considered sensitive. As a result, the process of using Google Drive became much more lengthy.
-
-The following paragraphs summarize that process:
-Go to Google Cloud Console, create a new project. Name it whatever. Under APIs and Services, go to Library and enable Google Drive API. Also, I had to create a new OAuth client, following which I saved the client ID and secret. I also had to add the emails of the team members to the list of test users. After all this, the following needs to be configured in DVC.
-
+Configure Google Drive OAuth client credentials:
 ```bash
 dvc remote modify gdrive --local gdrive_client_id 'client_id'
 dvc remote modify gdrive --local gdrive_client_secret 'client_secret'
 ```
-
-
