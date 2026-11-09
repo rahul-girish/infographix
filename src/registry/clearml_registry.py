@@ -81,18 +81,21 @@ class ClearMLModelRegistry:
         if not version.startswith("v"):
             version = f"v{version}"
 
-        # 1. First mirror to local registry to guarantee a local copy exists
-        local_manifest = self.local_registry.register_model(
-            model_name=model_name,
-            version=version,
-            model_object=model_object,
-            preprocessor=preprocessor,
-            feature_schema_columns=feature_schema_columns,
-            hyperparameters=hyperparameters,
-            metrics=metrics,
-            stage=stage,
-            description=description,
-        )
+        # 1. Mirror to local registry if not already present
+        try:
+            local_manifest = self.local_registry.register_model(
+                model_name=model_name,
+                version=version,
+                model_object=model_object,
+                preprocessor=preprocessor,
+                feature_schema_columns=feature_schema_columns,
+                hyperparameters=hyperparameters,
+                metrics=metrics,
+                stage=stage,
+                description=description,
+            )
+        except FileExistsError:
+            pass  # Local artifact already exists; proceed with ClearML registration
 
         pipeline_file = self.local_registry._model_dir(model_name) / version / "pipeline.joblib"
 
