@@ -14,66 +14,78 @@
    - **Micro-level**: 2D anisotropic spatial DBSCAN groups scattered text fragments into columns and pairs figures with captions.
 3. **Experiment Tracking**:
    - Tracked using **Aim** (with local JSON fallback via `src/tracking/tracker.py`).
-4. **Model Registry (`src/registry/model_registry.py`)**:
-   - Version-controlled, immutable model storage managing lifecycle stages (`development`, `staging`, `production`, `archived`).
-   - Currently registered in production: `poster_layout_clusterer` (`v1.0.0`).
+4. **Model Registry (`src/registry/clearml_registry.py` & `src/registry/model_registry.py`)**:
+   - **ClearML Model Registry**: Production artifact versioning, hyperparameter & metric tracking, and stage management (`production`, `staging`, `archived`) with remote cloud storage and web UI.
+   - **Local File-based Fallback**: Zero-crash offline guarantee if ClearML credentials or network are unavailable.
+   - Currently registered in production: `poster_layout_clusterer` (`v1.0.0` / `v1.1.0-clearml`).
 
 ---
 
-## 🚀 Quickstart: Using the Production Model Registry
+## 🚀 Quickstart: Using the ClearML Production Model Registry
 
-### Load the Active Production Model in FastAPI / Python
+### 1. Configure ClearML (One-time setup)
+If using the free ClearML Community Cloud (`https://app.clear.ml`):
+```bash
+# Interactive setup: paste your access key & secret from app.clear.ml/settings
+clearml-init
+```
+Or set environment variables in your `.env` or shell:
+```bash
+export CLEARML_API_ACCESS_KEY="your_access_key"
+export CLEARML_API_SECRET_KEY="your_secret_key"
+```
+*(If no credentials are provided, ClearML runs in offline mode automatically with zero errors).*
+
+### 2. Load the Active Production Model in FastAPI / Python
 ```python
-from src.registry.model_registry import ModelRegistry
+from src.registry.clearml_registry import ClearMLModelRegistry
 
-registry = ModelRegistry()
+registry = ClearMLModelRegistry(project_name="Infographix")
 
-# 1. Load active production model, preprocessor, and metadata manifest
-model, preprocessor, manifest = registry.load_production_model("poster_layout_clusterer")
+# Load active production model & preprocessor (fetches from ClearML or local cache)
+model, preprocessor, meta = registry.load_production_model("poster_layout_clusterer")
 
-print(f"Loaded: {manifest.model_name} ({manifest.version})")
-print(f"Stage: {manifest.stage}")
-print(f"Metrics: Train Silhouette={manifest.metrics['train_silhouette']:.4f}")
+print(f"Loaded: {meta.get('name', 'poster_layout_clusterer')}")
+print(f"Source: {meta.get('source')}")
 
-# 2. Run inference on extracted paper features
-# raw_features: 2D array matching feature_schema.json (92 columns)
+# Run inference on extracted paper features (92-column vector)
 scaled_features = preprocessor.transform(raw_features)
 cluster_id = model.predict(scaled_features)
 # cluster_id = 0, 1... (assigned archetype) or -1 (noise/outlier)
 ```
 
-### Inspect the Registry
+### 3. Register / Publish a Model to ClearML
+```bash
+python src/registry/register_clearml_production_model.py
+```
+
+### 4. Inspect Registered Models
 ```python
-from src.registry.model_registry import ModelRegistry
+from src.registry.clearml_registry import ClearMLModelRegistry
 
-registry = ModelRegistry()
-overview = registry.list_models()
-print(overview)
+registry = ClearMLModelRegistry()
+print(registry.list_models())
 ```
 
-### Register / Re-train a Production Model
+### 5. Run Live End-to-End Demo
 ```bash
-python src/registry/register_production_model.py
+python demo_live_pipeline.py
 ```
 
-### Run Benchmarks & Model Comparisons
-```bash
-python src/clustering/comparison.py
-```
-Outputs are written to `reports/comparisons/clustering_comparison.csv` and `reports/comparisons/clustering_comparison_report.md`.
-
-### Run Unit Tests
+### 6. Run Unit Tests
 ```bash
 python -c "
 import src.test_coco_dbscan as t1
 import src.test_model_registry as t2
+import src.test_clearml_registry as t3
 t1.test_coco_data_models_and_validation()
 t1.test_convert_extracted_document_to_coco()
 t1.test_canvas_to_coco_conversion()
 t1.test_poster_layout_dbscan_clustering()
 t1.test_spatial_block_dbscan_and_pairing()
 t2.test_model_registry_lifecycle()
-print('All tests passed!')
+t3.test_clearml_registry_offline_lifecycle()
+print('All tests passed successfully!')
 "
 ```
 
@@ -149,28 +161,10 @@ Open a notebook, set the kernel to infographix-venv, and run something to test t
 **Before every commit, make sure to update requirements.txt**
 **Make sure you are in the activated virtual environment before running this:**
 ```bash
-uv pip freeze > requirements.txt
+uv pip freeze | Out-File -Encoding utf8 requirements.txt
 ```
 
 ---
 
-## DVC Setup Notes
-
-Note that all DVC commands can only be run from within the virtual environment.
-
-Initialize DVC:
-```bash
-dvc init
-```
-
-Configure Google Drive Remote:
-```bash
-dvc remote add --default gdrive gdrive://folder_id
-dvc remote list
-```
-
-Configure Google Drive OAuth client credentials:
-```bash
-dvc remote modify gdrive --local gdrive_client_id 'client_id'
-dvc remote modify gdrive --local gdrive_client_secret 'client_secret'
-```
+## Custom DVC / MyDVC Setup Notes
+Dataset versions and file manifests are tracked under `.mydvc/manifests/`.
