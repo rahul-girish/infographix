@@ -1,17 +1,18 @@
-"""Trainer for Neural Poster Layout Generation with Aim Tracking and Multi-Task Metrics.
+"""Trainer for Neural Poster Layout Generation with ClearML Tracking and Multi-Task Metrics.
 
 Supports:
   - Reproducible training with random seeds
   - Train/Dev split evaluation
   - Full checkpointing (latest and best models with optimizer state)
-  - Aim experiment tracking for every individual loss and evaluation metric
+  - ClearML experiment tracking for all individual loss components, evaluation metrics,
+    hyperparameters, environment metadata, and visualizations
   - Gradient clipping and AdamW optimization with cosine annealing
 """
 
 from __future__ import annotations
 
-import os
 import random
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,11 @@ from typing import Any
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+
+try:
+    from clearml import Task
+except ImportError:
+    Task = None
 
 from src.neural_layout.dataset import PosterLayoutDataset, collate_layout_batch
 from src.neural_layout.evaluator import LayoutEvaluator
@@ -35,9 +41,40 @@ def set_seed(seed: int = 42) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def get_git_info() -> dict[str, str]:
+    """Retrieve git commit hash and branch safely."""
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        branch = subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        status = subprocess.check_output(
+            ["git", "status", "--porcelain"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        return {
+            "git_commit": commit,
+            "git_branch": branch,
+            "git_dirty": str(bool(status)),
+        }
+    except Exception:
+        return {
+            "git_commit": "unknown",
+            "git_branch": "unknown",
+            "git_dirty": "unknown",
+        }
+
+
 @dataclass
 class TrainingConfig:
-    """Hyperparameters for neural layout generator training."""
+    """Hyperparameters and ClearML tracking configuration for neural layout training."""
 
     seed: int = 42
     batch_size: int = 8
@@ -53,8 +90,14 @@ class TrainingConfig:
     dropout: float = 0.1
     loss_weights: LossWeights = field(default_factory=LossWeights)
     checkpoint_dir: Path = Path("models/checkpoints/neural_layout")
-    aim_repo: str = ".aim"
-    experiment_name: str = "neural_layout_v1"
+    project_name: str = "Infographix"
+    task_name: str = "Neural Layout Training - Local CPU"
+    task_type: str = "training"
+    tags: list[str] = field(default_factory=lambda: ["neural_layout", "stage_b", "cpu", "local"])
+    reuse_last_task_id: bool = False
+    log_to_clearml: bool = True
+    execution_env: str = "local_cpu"
+    dataset_version: str = "SciPostLayout v2.0.0"
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -67,6 +110,7 @@ class LayoutTrainer:
         config: TrainingConfig,
         train_dataset: PosterLayoutDataset,
         val_dataset: PosterLayoutDataset | None = None,
+        clearml_task: Any | None = None,
     ):
         self.config = config
         self.device = torch.device(config.device)
@@ -110,48 +154,180 @@ class LayoutTrainer:
         self.best_val_loss = float("inf")
         self.start_epoch = 0
 
-        # Initialize Aim tracking
-        self.aim_run = None
-        self._init_aim()
+        # Initialize ClearML tracking
+        self.clearml_task = clearml_task
+        self.clearml_logger = None
+        self._owns_clearml_task = False
+        if self.config.log_to_clearml:
+            self._init_clearml()
 
-    def _init_aim(self) -> None:
-        """Initialize Aim run safely."""
-        try:
-            from aim import Run
-            self.aim_run = Run(
-                repo=self.config.aim_repo,
-                experiment=self.config.experiment_name,
-            )
-            # Log hyperparameters
-            self.aim_run["hparams"] = {
-                "batch_size": self.config.batch_size,
-                "learning_rate": self.config.learning_rate,
-                "weight_decay": self.config.weight_decay,
-                "num_epochs": self.config.num_epochs,
-                "d_model": self.config.d_model,
-                "encoder_layers": self.config.encoder_layers,
-                "decoder_layers": self.config.decoder_layers,
-                "device": self.config.device,
-            }
-        except Exception as e:
-            print(f"[Warning] Aim tracking could not be initialized: {e}")
-            self.aim_run = None
-
-    def _log_metrics(self, metrics: dict[str, float], step: int, epoch: int, context: dict[str, str]) -> None:
-        """Log metrics to Aim if available."""
-        if self.aim_run is None:
+    def _init_clearml(self) -> None:
+        """Connect to existing ClearML Task or initialize a new one, and record config."""
+        if Task is None:
+            print("[Warning] clearml package is not installed; skipping experiment tracking.")
             return
+
         try:
-            for name, val in metrics.items():
-                self.aim_run.track(
-                    val,
-                    name=name,
-                    step=step,
-                    epoch=epoch,
-                    context=context,
+            if self.clearml_task is None:
+                self.clearml_task = Task.current_task()
+                if self.clearml_task is None:
+                    self.clearml_task = Task.init(
+                        project_name=self.config.project_name,
+                        task_name=self.config.task_name,
+                        task_type=self.config.task_type,
+                        reuse_last_task_id=self.config.reuse_last_task_id,
+                        tags=self.config.tags,
+                        auto_connect_frameworks=False,
+                    )
+                    self._owns_clearml_task = True
+
+            self.clearml_logger = self.clearml_task.get_logger()
+            self._log_configuration()
+        except Exception as e:
+            print(f"[Warning] ClearML tracking could not be initialized: {e}")
+            self.clearml_task = None
+            self.clearml_logger = None
+
+    def _log_configuration(self) -> None:
+        """Capture full training, model, loss, dataset, and environment configuration in ClearML."""
+        if self.clearml_task is None:
+            return
+
+        total_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        git_info = get_git_info()
+        device_name = (
+            torch.cuda.get_device_name(0)
+            if torch.cuda.is_available() and "cuda" in str(self.device)
+            else "CPU"
+        )
+
+        hyperparams = {
+            "model/architecture": "TemplateConditionedLayoutModel",
+            "model/d_model": self.config.d_model,
+            "model/num_heads": self.config.num_heads,
+            "model/encoder_layers": self.config.encoder_layers,
+            "model/decoder_layers": self.config.decoder_layers,
+            "model/ffn_dim": self.config.ffn_dim,
+            "model/num_columns": self.model.num_columns,
+            "model/dropout": self.config.dropout,
+            "model/trainable_parameters": total_params,
+            "training/batch_size": self.config.batch_size,
+            "training/learning_rate": self.config.learning_rate,
+            "training/weight_decay": self.config.weight_decay,
+            "training/num_epochs": self.config.num_epochs,
+            "training/grad_clip_norm": self.config.grad_clip_norm,
+            "training/seed": self.config.seed,
+            "training/optimizer": "AdamW",
+            "training/scheduler": f"CosineAnnealingLR(T_max={self.config.num_epochs}, eta_min=1e-5)",
+            "training/device": str(self.device),
+            "training/device_name": device_name,
+            "training/execution_env": self.config.execution_env,
+            "loss_weights/w_box": self.config.loss_weights.w_box,
+            "loss_weights/w_giou": self.config.loss_weights.w_giou,
+            "loss_weights/w_bound": self.config.loss_weights.w_bound,
+            "loss_weights/w_overlap": self.config.loss_weights.w_overlap,
+            "loss_weights/w_col": self.config.loss_weights.w_col,
+            "loss_weights/w_aspect": self.config.loss_weights.w_aspect,
+            "loss_weights/w_order": self.config.loss_weights.w_order,
+            "loss_weights/w_macro": self.config.loss_weights.w_macro,
+            "dataset/version": self.config.dataset_version,
+            "dataset/train_samples": len(self.train_dataset),
+            "dataset/val_samples": len(self.val_dataset) if self.val_dataset is not None else 0,
+            "environment/git_commit": git_info["git_commit"],
+            "environment/git_branch": git_info["git_branch"],
+            "environment/git_dirty": git_info["git_dirty"],
+        }
+
+        try:
+            self.clearml_task.connect(hyperparams, name="Experiment Configuration")
+        except Exception as e:
+            print(f"[Warning] Failed to connect configuration to ClearML: {e}")
+
+    def _log_epoch_metrics(
+        self,
+        train_metrics: dict[str, float],
+        val_metrics: dict[str, float],
+        epoch: int,
+    ) -> None:
+        """Report epoch-level training and validation metrics to ClearML using consistent names."""
+        if self.clearml_logger is None:
+            return
+
+        epoch_iter = epoch + 1
+        try:
+            # 1. Combined Total Loss (Train vs Val)
+            if "loss_total" in train_metrics:
+                self.clearml_logger.report_scalar(
+                    title="Loss - Total",
+                    series="train",
+                    value=train_metrics["loss_total"],
+                    iteration=epoch_iter,
                 )
-        except Exception:
-            pass
+            if "val_loss_total" in val_metrics:
+                self.clearml_logger.report_scalar(
+                    title="Loss - Total",
+                    series="val",
+                    value=val_metrics["val_loss_total"],
+                    iteration=epoch_iter,
+                )
+
+            # 2. All Eight Individual Loss Components
+            loss_components = {
+                "Loss - Box Regression": ("loss_box", "val_loss_box"),
+                "Loss - GIoU": ("loss_giou", "val_loss_giou"),
+                "Loss - Boundary": ("loss_bound", "val_loss_bound"),
+                "Loss - Overlap": ("loss_overlap", "val_loss_overlap"),
+                "Loss - Column Assignment": ("loss_col", "val_loss_col"),
+                "Loss - Aspect Ratio": ("loss_aspect", "val_loss_aspect"),
+                "Loss - Reading Order": ("loss_order", "val_loss_order"),
+                "Loss - Macro Column": ("loss_macro", "val_loss_macro"),
+            }
+            for title, (tr_key, val_key) in loss_components.items():
+                if tr_key in train_metrics:
+                    self.clearml_logger.report_scalar(
+                        title=title,
+                        series="train",
+                        value=train_metrics[tr_key],
+                        iteration=epoch_iter,
+                    )
+                if val_key in val_metrics:
+                    self.clearml_logger.report_scalar(
+                        title=title,
+                        series="val",
+                        value=val_metrics[val_key],
+                        iteration=epoch_iter,
+                    )
+
+            # 3. Evaluation Metrics
+            eval_metric_specs = [
+                ("Metrics - Alignment", "val_iou_mean", "val_iou_mean"),
+                ("Metrics - Alignment", "val_giou_mean", "val_giou_mean"),
+                ("Metrics - Geometric Constraints", "val_canvas_violation_rate", "val_canvas_violation_rate"),
+                ("Metrics - Geometric Constraints", "val_unintended_overlap_rate", "val_unintended_overlap_rate"),
+                ("Metrics - Structure", "val_column_accuracy", "val_column_accuracy"),
+                ("Metrics - Structure", "val_reading_order_kendall_tau", "val_reading_order_kendall_tau"),
+                ("Metrics - Template Baseline", "val_template_divergence_iou", "val_template_divergence_iou"),
+                ("Metrics - Template Baseline", "val_template_baseline_gt_iou", "val_template_baseline_gt_iou"),
+            ]
+            for title, series, key in eval_metric_specs:
+                if key in val_metrics:
+                    self.clearml_logger.report_scalar(
+                        title=title,
+                        series=series,
+                        value=val_metrics[key],
+                        iteration=epoch_iter,
+                    )
+
+            # 4. Learning Rate
+            if "learning_rate" in train_metrics:
+                self.clearml_logger.report_scalar(
+                    title="Hyperparameters",
+                    series="learning_rate",
+                    value=train_metrics["learning_rate"],
+                    iteration=epoch_iter,
+                )
+        except Exception as e:
+            print(f"[Warning] ClearML scalar reporting failed: {e}")
 
     def train_epoch(self, epoch: int) -> dict[str, float]:
         """Execute one training epoch."""
@@ -159,8 +335,7 @@ class LayoutTrainer:
         accum_losses: dict[str, float] = {}
         num_batches = 0
 
-        for batch_idx, batch in enumerate(self.train_loader):
-            # Move batch tensors to device
+        for batch in self.train_loader:
             batch_dev = {
                 k: v.to(self.device) if isinstance(v, torch.Tensor) else v
                 for k, v in batch.items()
@@ -189,14 +364,10 @@ class LayoutTrainer:
                 accum_losses[k] = accum_losses.get(k, 0.0) + v
             num_batches += 1
 
-            step = epoch * len(self.train_loader) + batch_idx
-            self._log_metrics(loss_dict, step=step, epoch=epoch, context={"subset": "train_step"})
-
         self.scheduler.step()
 
         epoch_metrics = {k: v / max(1, num_batches) for k, v in accum_losses.items()}
         epoch_metrics["learning_rate"] = self.optimizer.param_groups[0]["lr"]
-        self._log_metrics(epoch_metrics, step=epoch, epoch=epoch, context={"subset": "train_epoch"})
         return epoch_metrics
 
     @torch.no_grad()
@@ -238,7 +409,6 @@ class LayoutTrainer:
         for k, v in accum_eval.items():
             val_metrics[f"val_{k}"] = v / max(1, num_batches)
 
-        self._log_metrics(val_metrics, step=epoch, epoch=epoch, context={"subset": "val_epoch"})
         return val_metrics
 
     def save_checkpoint(
@@ -248,8 +418,13 @@ class LayoutTrainer:
         is_best: bool = False,
         filename: str = "latest_checkpoint.pt",
     ) -> Path:
-        """Save training checkpoint."""
+        """Save local training checkpoint (model weights + optimizer state)."""
         ckpt_path = self.config.checkpoint_dir / filename
+        clearml_tid = (
+            str(self.clearml_task.id)
+            if (self.clearml_task is not None and getattr(self.clearml_task, "id", None) is not None)
+            else None
+        )
         state = {
             "epoch": epoch,
             "model_state_dict": self.model.state_dict(),
@@ -257,6 +432,7 @@ class LayoutTrainer:
             "scheduler_state_dict": self.scheduler.state_dict(),
             "metrics": metrics,
             "config": self.config,
+            "clearml_task_id": clearml_tid,
         }
         torch.save(state, ckpt_path)
 
@@ -268,7 +444,7 @@ class LayoutTrainer:
         return ckpt_path
 
     def load_checkpoint(self, checkpoint_path: Path) -> dict[str, Any]:
-        """Load state from checkpoint."""
+        """Load state from local checkpoint."""
         state = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(state["model_state_dict"])
         self.optimizer.load_state_dict(state["optimizer_state_dict"])
@@ -297,6 +473,8 @@ class LayoutTrainer:
             train_m = self.train_epoch(epoch)
             val_m = self.validate(epoch)
 
+            self._log_epoch_metrics(train_metrics=train_m, val_metrics=val_m, epoch=epoch)
+
             history["epoch"].append(epoch + 1)
             history["train_loss"].append(train_m.get("loss_total", 0.0))
             history["val_loss"].append(val_m.get("val_loss_total", 0.0))
@@ -314,7 +492,6 @@ class LayoutTrainer:
 
             self.save_checkpoint(epoch=epoch, metrics=val_m, is_best=is_best)
 
-            # Concise epoch progress log
             print(
                 f"[Epoch {epoch + 1:02d}/{self.config.num_epochs:02d}] "
                 f"Train Loss: {train_m.get('loss_total', 0.0):.4f} | "
@@ -326,9 +503,15 @@ class LayoutTrainer:
                 f"{'(*best*)' if is_best else ''}"
             )
 
-        if self.aim_run is not None:
+        if self.clearml_logger is not None:
             try:
-                self.aim_run.close()
+                self.clearml_logger.flush()
+            except Exception:
+                pass
+
+        if self._owns_clearml_task and self.clearml_task is not None:
+            try:
+                self.clearml_task.close()
             except Exception:
                 pass
 

@@ -31,3 +31,5 @@ data/interim/scipostlayout/poster/png/*.txt
 
 *.zst
 /.mydvc/credentials
+clearml.conf
+*.clearml.conf

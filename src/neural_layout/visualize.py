@@ -133,3 +133,58 @@ def render_tri_layout_comparison(
         plt.savefig(save_path, dpi=180, bbox_inches="tight")
 
     return fig
+
+
+def render_training_curves(
+    history: dict[str, list[float]],
+    save_path: Path | None = None,
+) -> plt.Figure:
+    """Render 3-panel figure showing training loss progression, alignment, and constraints."""
+    epochs = history.get("epoch", list(range(1, len(history.get("train_loss", [])) + 1)))
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    fig.patch.set_facecolor("#f8f9fa")
+
+    # Panel 1: Loss Curve
+    axes[0].set_facecolor("#ffffff")
+    axes[0].plot(epochs, history.get("train_loss", []), label="Train Loss", marker="o", color="#1f77b4", linewidth=2)
+    if "val_loss" in history and any(history["val_loss"]):
+        axes[0].plot(epochs, history["val_loss"], label="Val Loss", marker="s", color="#ff7f0e", linewidth=2)
+    axes[0].set_title("Multi-Task Loss Progression", fontweight="bold", fontsize=12)
+    axes[0].set_xlabel("Epoch")
+    axes[0].set_ylabel("Total Loss")
+    axes[0].grid(True, linestyle="--", alpha=0.5)
+    axes[0].legend()
+
+    # Panel 2: Alignment and Overlap
+    axes[1].set_facecolor("#ffffff")
+    if "val_iou" in history:
+        axes[1].plot(epochs, history["val_iou"], label="Val IoU vs GT", marker="^", color="#2ca02c", linewidth=2)
+    if "val_giou" in history:
+        axes[1].plot(epochs, history["val_giou"], label="Val GIoU vs GT", marker="v", color="#9467bd", linewidth=2)
+    axes[1].set_title("Geometric Alignment Metrics", fontweight="bold", fontsize=12)
+    axes[1].set_xlabel("Epoch")
+    axes[1].set_ylabel("Score")
+    axes[1].grid(True, linestyle="--", alpha=0.5)
+    axes[1].legend()
+
+    # Panel 3: Constraints and Structural Properties
+    axes[2].set_facecolor("#ffffff")
+    if "val_boundary_violations" in history:
+        axes[2].plot(epochs, history["val_boundary_violations"], label="Boundary Violations", marker="x", color="#d62728", linewidth=2)
+    if "val_unintended_overlaps" in history:
+        axes[2].plot(epochs, history["val_unintended_overlaps"], label="Unintended Overlap Rate", marker="d", color="#8c564b", linewidth=2)
+    if "val_col_acc" in history:
+        axes[2].plot(epochs, history["val_col_acc"], label="Column Accuracy", marker="+", color="#17becf", linewidth=2)
+    axes[2].set_title("Constraints & Structural Accuracy", fontweight="bold", fontsize=12)
+    axes[2].set_xlabel("Epoch")
+    axes[2].set_ylabel("Rate / Accuracy")
+    axes[2].grid(True, linestyle="--", alpha=0.5)
+    axes[2].legend()
+
+    plt.tight_layout()
+    if save_path is not None:
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(save_path, dpi=180, bbox_inches="tight")
+
+    return fig

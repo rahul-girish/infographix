@@ -12,8 +12,10 @@ Tests:
   9. Mini training smoke run with checkpointing and Aim initialization.
 """
 
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import numpy as np
 import torch
@@ -319,6 +321,115 @@ class TestStageBNeuralLayout(unittest.TestCase):
         # Column accuracy and order tau should be high on perfectly aligned signals
         self.assertAlmostEqual(metrics["column_accuracy"], 1.0, places=2)
         self.assertGreater(metrics["reading_order_kendall_tau"], 0.8)
+
+    def test_trainer_with_clearml_tracking_and_checkpointing(self):
+        """Verify LayoutTrainer logs config, all 8 losses, metrics to ClearML and saves checkpoints."""
+        class MockDataset(torch.utils.data.Dataset):
+            def __init__(self, sample, n=4):
+                self.sample = sample
+                self.n = n
+
+            def __len__(self):
+                return self.n
+
+            def __getitem__(self, idx):
+                # Return single item with shape matching PosterLayoutDataset output
+                return {
+                    "content_feats": self.sample["content_feats"][0],
+                    "template_feats": self.sample["template_feats"][0],
+                    "target_boxes": self.sample["target_boxes"][0],
+                    "target_columns": self.sample["target_columns"][0],
+                    "target_orders": self.sample["target_orders"][0],
+                    "macro_target": self.sample["macro_targets"][0],
+                    "num_content": torch.tensor(self.sample["content_feats"].shape[1]),
+                    "num_template": torch.tensor(self.sample["template_feats"].shape[1]),
+                    "target_poster_id": torch.tensor(101),
+                    "template_poster_id": torch.tensor(202),
+                }
+
+        train_ds = MockDataset(self.batch, n=4)
+        val_ds = MockDataset(self.batch, n=2)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ckpt_dir = Path(tmp_dir) / "checkpoints"
+
+            mock_task = MagicMock()
+            mock_task.id = "mock_task_001"
+            mock_logger = MagicMock()
+            mock_task.get_logger.return_value = mock_logger
+
+            config = TrainingConfig(
+                seed=42,
+                batch_size=2,
+                learning_rate=1e-3,
+                num_epochs=1,
+                d_model=self.d_model,
+                num_heads=self.num_heads,
+                encoder_layers=2,
+                decoder_layers=2,
+                ffn_dim=self.ffn_dim,
+                checkpoint_dir=ckpt_dir,
+                log_to_clearml=True,
+                device="cpu",
+            )
+
+            model = TemplateConditionedLayoutModel(
+                content_dim=18,
+                template_dim=16,
+                d_model=self.d_model,
+                num_heads=self.num_heads,
+                encoder_layers=2,
+                decoder_layers=2,
+                ffn_dim=self.ffn_dim,
+            )
+
+            trainer = LayoutTrainer(
+                model=model,
+                config=config,
+                train_dataset=train_ds,
+                val_dataset=val_ds,
+                clearml_task=mock_task,
+            )
+
+            # 1. Verify ClearML configuration connected
+            mock_task.connect.assert_called_once()
+            connected_config = mock_task.connect.call_args[0][0]
+            self.assertEqual(connected_config["model/architecture"], "TemplateConditionedLayoutModel")
+            self.assertEqual(connected_config["training/batch_size"], 2)
+            self.assertEqual(connected_config["training/learning_rate"], 1e-3)
+            self.assertIn("loss_weights/w_box", connected_config)
+            self.assertIn("loss_weights/w_giou", connected_config)
+            self.assertIn("loss_weights/w_bound", connected_config)
+            self.assertIn("loss_weights/w_overlap", connected_config)
+            self.assertIn("dataset/version", connected_config)
+
+            # 2. Train 1 epoch
+            history = trainer.train()
+
+            # 3. Verify all 8 individual loss components reported to ClearML
+            reported_titles = [call[1]["title"] for call in mock_logger.report_scalar.call_args_list]
+            expected_loss_titles = [
+                "Loss - Total",
+                "Loss - Box Regression",
+                "Loss - GIoU",
+                "Loss - Boundary",
+                "Loss - Overlap",
+                "Loss - Column Assignment",
+                "Loss - Aspect Ratio",
+                "Loss - Reading Order",
+                "Loss - Macro Column",
+            ]
+            for lt in expected_loss_titles:
+                self.assertIn(lt, reported_titles, f"Missing metric report for {lt}")
+
+            # 4. Verify evaluation metrics reported
+            self.assertIn("Metrics - Alignment", reported_titles)
+            self.assertIn("Metrics - Geometric Constraints", reported_titles)
+            self.assertIn("Metrics - Structure", reported_titles)
+
+            # 5. Verify local checkpoint saving still functions
+            self.assertTrue((ckpt_dir / "best_model.pt").exists())
+            self.assertTrue((ckpt_dir / "latest_checkpoint.pt").exists())
 
 
 if __name__ == "__main__":

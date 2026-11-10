@@ -1,0 +1,111 @@
+{
+  "clearml_model_id": "6a2c2d4897384aaf8aa59c7c66a86bfb",
+  "model_name": "poster_layout_generator-v0.1.0",
+  "originating_training_task_id": "8cd6cb755a084535a7bba3ae551e3e20",
+  "artifact_uri": "https://files.clear.ml/Infographix/Neural Layout Training - Local CPU Validation.8cd6cb755a084535a7bba3ae551e3e20/models/poster_layout_generator-v0.1.0.zip",
+  "tags": [
+    "arch:TemplateConditionedLayoutModel",
+    "dataset:SciPostLayout v2.0.0",
+    "family:poster_layout_generator",
+    "stage:candidate",
+    "version:v0.1.0"
+  ],
+  "lifecycle_status": {
+    "key": "lifecycle_status",
+    "type": "str",
+    "value": "candidate"
+  },
+  "published": false,
+  "checkpoint_sha256": "510cdbba983471f1e41ecabc3270a60bc8f234b10e33824c58833197203281a7",
+  "manifest": {
+    "project_name": "infographix",
+    "model_family": "poster_layout_generator",
+    "semantic_version": "0.1.0",
+    "full_model_name": "poster_layout_generator-v0.1.0",
+    "clearml_training_task_id": "8cd6cb755a084535a7bba3ae551e3e20",
+    "dataset_identifier": "SciPostLayout v2.0.0",
+    "git_commit": "f9a3fae5368f667c88c773b80a34a758f871fd2d",
+    "checkpoint_sha256": "510cdbba983471f1e41ecabc3270a60bc8f234b10e33824c58833197203281a7",
+    "bundle_sha256s": {
+      "model_weights.pt": "510cdbba983471f1e41ecabc3270a60bc8f234b10e33824c58833197203281a7",
+      "model_config.json": "16b786b298823dcd70fe346f8a025b75e1921ddfaec5af58c40cf53d9f69a5c8",
+      "feature_schema.json": "ba5baf0e807b729c4200a15fb58f7bd41b76aa0861173805920da15be8869693",
+      "preprocessing_config.json": "165cfc33bc1e2aeb88fef514c3599b5e688ba3f6744635477f84dd896306aa4b",
+      "environment.json": "2d2c3a0c8fb54fc8743317f9f80ac8a91980f599935224a0ec92ad98f58c13d6"
+    },
+    "created_at": "2026-11-10T05:31:33.604182+00:00",
+    "lifecycle_status": "candidate",
+    "parent_model_id": null,
+    "model_config": {
+      "architecture": "TemplateConditionedLayoutModel",
+      "content_dim": 18,
+      "template_dim": 16,
+      "d_model": 128,
+      "num_heads": 4,
+      "encoder_layers": 3,
+      "decoder_layers": 3,
+      "ffn_dim": 256,
+      "num_columns": 5,
+      "dropout": 0.1
+    },
+    "training_config": {
+      "seed": 42,
+      "batch_size": 8,
+      "learning_rate": 0.0004,
+      "weight_decay": 0.0001,
+      "num_epochs": 3,
+      "grad_clip_norm": 1.0,
+      "optimizer": "AdamW",
+      "scheduler": "CosineAnnealingLR(T_max=3, eta_min=1e-5)",
+      "loss_weights": {
+        "w_box": 1.0,
+        "w_giou": 1.5,
+        "w_bound": 2.5,
+        "w_overlap": 2.0,
+        "w_col": 1.0,
+        "w_aspect": 1.2,
+        "w_order": 0.8,
+        "w_macro": 0.5
+      },
+      "execution_env": "local_cpu",
+      "checkpoint_epoch": 0
+    },
+    "environment": {
+      "python_version": "3.12.3",
+      "torch_version": "2.15.0+cu132",
+      "clearml_version": "2.2.0",
+      "numpy_version": "2.5.4",
+      "platform": "Linux-7.0.0-42-generic-x86_64-with-glibc2.39",
+      "git_commit": "f9a3fae5368f667c88c773b80a34a758f871fd2d"
+    },
+    "metrics": {
+      "val_loss_total": 6.256042957305908,
+      "val_loss_box": 0.7771203517913818,
+      "val_loss_giou": 1.3890410661697388,
+      "val_loss_bound": 0.0,
+      "val_loss_overlap": 0.10515819489955902,
+      "val_loss_col": 1.3190490007400513,
+      "val_loss_aspect": 0.5565189719200134,
+      "val_loss_order": 0.6920397877693176,
+      "val_loss_macro": 1.2890812158584595,
+      "val_iou_mean": 0.02730239929698243,
+      "val_giou_mean": -0.38904118904257345,
+      "val_canvas_violation_rate": 0.0,
+      "val_unintended_overlap_rate": 1.0,
+      "val_unintended_overlap_mean_area": 0.10785041109035574,
+      "val_column_accuracy": 0.574585635359116,
+      "val_reading_order_kendall_tau": 0.14252233082845528,
+      "val_aspect_ratio_log_error": 0.556519016623497,
+      "val_macro_column_accuracy": 0.625,
+      "val_template_divergence_iou": 0.03172905729817493,
+      "val_template_baseline_gt_iou": 0.016448737402672168
+    }
+  },
+  "reproducibility_max_abs_diffs": {
+    "pred_boxes": 0.0,
+    "pred_column_logits": 0.0,
+    "pred_order_scores": 0.0,
+    "pred_macro_column_logits": 0.0
+  },
+  "test_poster_id": 194056279
+}
