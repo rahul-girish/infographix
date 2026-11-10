@@ -1,0 +1,31 @@
+pipeline_version: "2.0.0"
+
+paths:
+  raw_dir: "data/interim/scipostlayout/poster/png"
+  out_dir: "data/processed/features/v2"
+
+splits:
+  names:
+    - "train"
+    - "dev"
+    - "test"
+  ratios:
+    - 0.70
+    - 0.15
+    - 0.15
+  random_state: 42
+  stratify_by_orientation: true
+
+validation:
+  boundary_tolerance_px: 1.0
+
+relations:
+  align_tol: 0.015
+  knn_k: 3
+
+posters:
+  grid_res: 32
+
+export:
+  export_legacy: true
+  overwrite_legacy: true
