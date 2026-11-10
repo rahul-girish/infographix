@@ -28,8 +28,10 @@ import pandas as pd
 from scipy.signal import find_peaks
 
 SPLITS = ("train", "dev", "test")
+DEFAULT_SPLIT_RATIOS: tuple[float, float, float] = (0.70, 0.15, 0.15)
 
 # Canonical SciPostLayout v2 category mapping
+# This is defined by the dataset itself
 SCIPOST_CATEGORIES: dict[int, str] = {
     487601213: "Title",
     674852286: "Author Info",
@@ -59,21 +61,80 @@ TEXTUAL_CAT_IDS = {2871247081, 2837082304, 788514875}  # Text, List, Caption
 BODY_STRUCT_CAT_IDS = {481284670, 2871247081, 2837082304, 3731383018, 3405481596}
 UNKNOWN_CAT_ID = 3591166397
 
+# epsilon, i assume for preventing divide by zero
 EPS = 1e-6
 
-
+# all this for a snake case name.
 def category_slug(name: str) -> str:
     """Create stable snake_case identifier from a category name."""
     slug = re.sub(r"[^a-z0-9]+", "_", str(name).lower()).strip("_")
     return slug or "unnamed"
 
 
+def _compute_orientation(widths: np.ndarray, heights: np.ndarray) -> np.ndarray:
+    """Classify poster aspect ratios into portrait, landscape, or square."""
+    aspect = widths / heights
+    return np.select(
+        [aspect < 0.95, aspect > 1.05],
+        ["portrait", "landscape"],
+        default="square",
+    )
+
+
+def assign_pooled_splits(
+    pooled_images_df: pd.DataFrame,
+    split_ratios: tuple[float, float, float] = DEFAULT_SPLIT_RATIOS,
+    random_state: int = 42,
+    stratify_by_orientation: bool = True,
+) -> pd.DataFrame:
+    """Deterministically assign pooled posters into train/dev/test splits."""
+    if len(split_ratios) != 3 or any(r <= 0 for r in split_ratios):
+        raise ValueError(f"split_ratios must contain 3 positive floats, got {split_ratios}")
+    if abs(sum(split_ratios) - 1.0) > 1e-6:
+        raise ValueError(
+            f"split_ratios must sum to 1.0, got {split_ratios} (sum={sum(split_ratios)})"
+        )
+
+    df = pooled_images_df.sort_values("id", kind="mergesort").reset_index(drop=True).copy()
+    r_train, r_dev, _ = split_ratios
+    rng = np.random.default_rng(random_state)
+    assigned_splits = np.empty(len(df), dtype=object)
+
+    def _assign_group(indices: np.ndarray) -> None:
+        perm = indices[rng.permutation(len(indices))]
+        n = len(perm)
+        n_train = int(round(n * r_train))
+        n_dev = int(round(n * r_dev))
+        if n_train + n_dev > n:
+            n_dev = max(0, n - n_train)
+        assigned_splits[perm[:n_train]] = "train"
+        assigned_splits[perm[n_train : n_train + n_dev]] = "dev"
+        assigned_splits[perm[n_train + n_dev :]] = "test"
+
+    if stratify_by_orientation:
+        orientations = _compute_orientation(
+            df["width"].to_numpy(dtype=float),
+            df["height"].to_numpy(dtype=float),
+        )
+        for orient in sorted(np.unique(orientations)):
+            _assign_group(np.where(orientations == orient)[0])
+    else:
+        _assign_group(np.arange(len(df)))
+
+    df["split"] = assigned_splits
+    return df
+
+
+# entry of the data processing.
 def validate_and_extract_elements(
     raw_dir: Path,
     splits: tuple[str, ...] = SPLITS,
     boundary_tolerance_px: float = 1.0,
+    split_ratios: tuple[float, float, float] = DEFAULT_SPLIT_RATIOS,
+    random_state: int = 42,
+    stratify_by_orientation: bool = True,
 ) -> tuple[dict[str, pd.DataFrame], pd.DataFrame, pd.DataFrame, dict[str, Any]]:
-    """Step 1: Load split JSONs, validate annotations, and build canonical element table.
+    """Step 1: Pool all source split JSONs, re-split into 70/15/15, validate annotations, and build canonical element table.
 
     Returns:
         images_by_split: dict of split -> images DataFrame
@@ -81,238 +142,269 @@ def validate_and_extract_elements(
         rejected_df: rejected annotations with explicit rejection_reason
         quality_summary: dictionary of counts and integrity checks
     """
-    images_by_split: dict[str, pd.DataFrame] = {}
-    valid_element_frames: list[pd.DataFrame] = []
-    rejected_frames: list[pd.DataFrame] = []
-    quality_rows: list[dict[str, Any]] = []
+    raw_image_frames: list[pd.DataFrame] = []
+    raw_ann_frames: list[pd.DataFrame] = []
+    cat_lookup: dict[int, str] = {}
 
-    for split in splits:
-        json_path = raw_dir / f"{split}.json"
+    for source_split in splits:
+        json_path = raw_dir / f"{source_split}.json"
         with open(json_path, "r", encoding="utf-8") as f:
             coco = json.load(f)
 
-        cat_lookup = {c["id"]: c["name"] for c in coco["categories"]}
+        cat_lookup.update({c["id"]: c["name"] for c in coco["categories"]})
         images_df = pd.DataFrame(coco["images"]).copy()
         ann_df = pd.DataFrame(coco["annotations"]).copy()
 
         # Basic integrity assertions on images
-        assert images_df["id"].is_unique, f"Duplicate image IDs in {split}"
+        assert images_df["id"].is_unique, f"Duplicate image IDs in {source_split}"
         assert (images_df["width"] > 0).all() and (images_df["height"] > 0).all()
 
-        images_df["split"] = split
-        images_by_split[split] = images_df
+        images_df["source_split"] = source_split
+        ann_df["source_split"] = source_split
+        raw_image_frames.append(images_df)
+        raw_ann_frames.append(ann_df)
 
-        # Unpack COCO bbox [x, y, w, h]
-        bbox_cols = pd.DataFrame(
-            ann_df["bbox"].tolist(),
-            columns=["raw_x", "raw_y", "raw_w", "raw_h"],
-            index=ann_df.index,
-        ).apply(pd.to_numeric, errors="coerce")
+    pooled_images_df = pd.concat(raw_image_frames, ignore_index=True)
+    assert pooled_images_df["id"].is_unique, "Duplicate image IDs across pooled splits"
 
-        ann_df = pd.concat([ann_df, bbox_cols], axis=1)
-        img_meta = images_df.set_index("id")
-        ann_df["canvas_width_px"] = ann_df["image_id"].map(img_meta["width"]).astype(float)
-        ann_df["canvas_height_px"] = ann_df["image_id"].map(img_meta["height"]).astype(float)
-        ann_df["split"] = split
+    pooled_images_df = assign_pooled_splits(
+        pooled_images_df,
+        split_ratios=split_ratios,
+        random_state=random_state,
+        stratify_by_orientation=stratify_by_orientation,
+    )
+    images_by_split: dict[str, pd.DataFrame] = {
+        split: pooled_images_df[pooled_images_df["split"] == split].reset_index(drop=True)
+        for split in SPLITS
+    }
 
-        # Clip tiny floating-point boundary overshoots within boundary_tolerance_px
-        x_Clip = np.where(
-            (ann_df["raw_x"] < 0) & (ann_df["raw_x"] >= -boundary_tolerance_px),
-            0.0,
-            ann_df["raw_x"],
+    ann_df = pd.concat(raw_ann_frames, ignore_index=True)
+
+    # Unpack COCO bbox [x, y, w, h]
+    bbox_cols = pd.DataFrame(
+        ann_df["bbox"].tolist(),
+        columns=["raw_x", "raw_y", "raw_w", "raw_h"],
+        index=ann_df.index,
+    ).apply(pd.to_numeric, errors="coerce")
+
+    ann_df = pd.concat([ann_df, bbox_cols], axis=1)
+    img_meta = pooled_images_df.set_index("id")
+    ann_df["canvas_width_px"] = ann_df["image_id"].map(img_meta["width"]).astype(float)
+    ann_df["canvas_height_px"] = ann_df["image_id"].map(img_meta["height"]).astype(float)
+    ann_df["split"] = ann_df["image_id"].map(img_meta["split"]).fillna(ann_df["source_split"])
+
+    # Clip tiny floating-point boundary overshoots within boundary_tolerance_px
+    x_Clip = np.where(
+        (ann_df["raw_x"] < 0) & (ann_df["raw_x"] >= -boundary_tolerance_px),
+        0.0,
+        ann_df["raw_x"],
+    )
+    y_Clip = np.where(
+        (ann_df["raw_y"] < 0) & (ann_df["raw_y"] >= -boundary_tolerance_px),
+        0.0,
+        ann_df["raw_y"],
+    )
+    x2_raw = x_Clip + ann_df["raw_w"]
+    y2_raw = y_Clip + ann_df["raw_h"]
+    w_Clip = np.where(
+        (x2_raw > ann_df["canvas_width_px"])
+        & (x2_raw <= ann_df["canvas_width_px"] + boundary_tolerance_px),
+        ann_df["canvas_width_px"] - x_Clip,
+        ann_df["raw_w"],
+    )
+    h_Clip = np.where(
+        (y2_raw > ann_df["canvas_height_px"])
+        & (y2_raw <= ann_df["canvas_height_px"] + boundary_tolerance_px),
+        ann_df["canvas_height_px"] - y_Clip,
+        ann_df["raw_h"],
+    )
+
+    # Validation rules
+    valid_img_ids = set(pooled_images_df["id"])
+    is_finite = np.asarray(
+        np.isfinite(ann_df[["raw_x", "raw_y", "raw_w", "raw_h"]]).all(axis=1),
+        dtype=bool,
+    )
+    has_valid_img = np.asarray(ann_df["image_id"].isin(valid_img_ids), dtype=bool)
+    has_valid_cat = np.asarray(ann_df["category_id"].isin(cat_lookup.keys()), dtype=bool)
+    non_neg_origin = np.asarray((x_Clip >= 0) & (y_Clip >= 0), dtype=bool)
+    pos_dims = np.asarray((w_Clip > 0) & (h_Clip > 0), dtype=bool)
+    in_bounds = np.asarray(
+        (x_Clip + w_Clip <= ann_df["canvas_width_px"].to_numpy() + 1e-5)
+        & (y_Clip + h_Clip <= ann_df["canvas_height_px"].to_numpy() + 1e-5),
+        dtype=bool,
+    )
+
+    valid_mask = (
+        is_finite
+        & has_valid_img
+        & has_valid_cat
+        & non_neg_origin
+        & pos_dims
+        & in_bounds
+    )
+    inv_mask = ~valid_mask
+
+    # Determine explicit rejection reason for invalid rows
+    if inv_mask.any():
+        rej = ann_df.loc[inv_mask].copy()
+        reasons = np.full(len(rej), "unknown_error", dtype=object)
+        reasons = np.where(~in_bounds[inv_mask], "exceeds_canvas_bounds", reasons)
+        reasons = np.where(~non_neg_origin[inv_mask], "negative_origin", reasons)
+        reasons = np.where(~pos_dims[inv_mask], "non_positive_dimensions", reasons)
+        reasons = np.where(~has_valid_cat[inv_mask], "invalid_category_id", reasons)
+        reasons = np.where(~has_valid_img[inv_mask], "orphan_image_id", reasons)
+        reasons = np.where(~is_finite[inv_mask], "non_finite_coordinates", reasons)
+        rej["rejection_reason"] = reasons
+        rejected_df = (
+            rej[
+                [
+                    "id",
+                    "image_id",
+                    "split",
+                    "source_split",
+                    "category_id",
+                    "raw_x",
+                    "raw_y",
+                    "raw_w",
+                    "raw_h",
+                    "canvas_width_px",
+                    "canvas_height_px",
+                    "rejection_reason",
+                ]
+            ]
+            .rename(columns={"id": "element_id", "image_id": "poster_id"})
+            .reset_index(drop=True)
         )
-        y_Clip = np.where(
-            (ann_df["raw_y"] < 0) & (ann_df["raw_y"] >= -boundary_tolerance_px),
-            0.0,
-            ann_df["raw_y"],
-        )
-        x2_raw = x_Clip + ann_df["raw_w"]
-        y2_raw = y_Clip + ann_df["raw_h"]
-        w_Clip = np.where(
-            (x2_raw > ann_df["canvas_width_px"])
-            & (x2_raw <= ann_df["canvas_width_px"] + boundary_tolerance_px),
-            ann_df["canvas_width_px"] - x_Clip,
-            ann_df["raw_w"],
-        )
-        h_Clip = np.where(
-            (y2_raw > ann_df["canvas_height_px"])
-            & (y2_raw <= ann_df["canvas_height_px"] + boundary_tolerance_px),
-            ann_df["canvas_height_px"] - y_Clip,
-            ann_df["raw_h"],
-        )
+    else:
+        rejected_df = pd.DataFrame()
 
-        # Validation rules
-        is_finite = np.asarray(
-            np.isfinite(ann_df[["raw_x", "raw_y", "raw_w", "raw_h"]]).all(axis=1),
-            dtype=bool,
-        )
-        has_valid_img = np.asarray(ann_df["image_id"].isin(set(images_df["id"])), dtype=bool)
-        has_valid_cat = np.asarray(ann_df["category_id"].isin(cat_lookup.keys()), dtype=bool)
-        non_neg_origin = np.asarray((x_Clip >= 0) & (y_Clip >= 0), dtype=bool)
-        pos_dims = np.asarray((w_Clip > 0) & (h_Clip > 0), dtype=bool)
-        in_bounds = np.asarray(
-            (x_Clip + w_Clip <= ann_df["canvas_width_px"].to_numpy() + 1e-5)
-            & (y_Clip + h_Clip <= ann_df["canvas_height_px"].to_numpy() + 1e-5),
-            dtype=bool,
-        )
+    # Process valid elements
+    val = ann_df.loc[valid_mask].copy()
+    val["raw_x"] = x_Clip[valid_mask]
+    val["raw_y"] = y_Clip[valid_mask]
+    val["raw_w"] = w_Clip[valid_mask]
+    val["raw_h"] = h_Clip[valid_mask]
 
-        valid_mask = (
-            is_finite
-            & has_valid_img
-            & has_valid_cat
-            & non_neg_origin
-            & pos_dims
-            & in_bounds
-        )
-        inv_mask = ~valid_mask
+    W = val["canvas_width_px"].to_numpy()
+    H = val["canvas_height_px"].to_numpy()
+    x = val["raw_x"].to_numpy()
+    y = val["raw_y"].to_numpy()
+    w = val["raw_w"].to_numpy()
+    h = val["raw_h"].to_numpy()
 
-        # Determine explicit rejection reason for invalid rows
-        if inv_mask.any():
-            rej = ann_df.loc[inv_mask].copy()
-            reasons = np.full(len(rej), "unknown_error", dtype=object)
-            reasons = np.where(~in_bounds[inv_mask], "exceeds_canvas_bounds", reasons)
-            reasons = np.where(~non_neg_origin[inv_mask], "negative_origin", reasons)
-            reasons = np.where(~pos_dims[inv_mask], "non_positive_dimensions", reasons)
-            reasons = np.where(~has_valid_cat[inv_mask], "invalid_category_id", reasons)
-            reasons = np.where(~has_valid_img[inv_mask], "orphan_image_id", reasons)
-            reasons = np.where(~is_finite[inv_mask], "non_finite_coordinates", reasons)
-            rej["rejection_reason"] = reasons
-            rejected_frames.append(
-                rej[
-                    [
-                        "id",
-                        "image_id",
-                        "split",
-                        "category_id",
-                        "raw_x",
-                        "raw_y",
-                        "raw_w",
-                        "raw_h",
-                        "canvas_width_px",
-                        "canvas_height_px",
-                        "rejection_reason",
-                    ]
-                ].rename(columns={"id": "element_id", "image_id": "poster_id"})
-            )
+    x0 = np.clip(x / W, 0.0, 1.0)
+    y0 = np.clip(y / H, 0.0, 1.0)
+    w_norm = np.clip(w / W, EPS, 1.0)
+    h_norm = np.clip(h / H, EPS, 1.0)
+    x1 = np.clip(x0 + w_norm, 0.0, 1.0)
+    y1 = np.clip(y0 + h_norm, 0.0, 1.0)
+    cx = np.clip(x0 + w_norm / 2.0, 0.0, 1.0)
+    cy = np.clip(y0 + h_norm / 2.0, 0.0, 1.0)
+    area_norm = w_norm * h_norm
+    bbox_aspect = w_norm / (h_norm + EPS)
 
-        # Process valid elements
-        val = ann_df.loc[valid_mask].copy()
-        val["raw_x"] = x_Clip[valid_mask]
-        val["raw_y"] = y_Clip[valid_mask]
-        val["raw_w"] = w_Clip[valid_mask]
-        val["raw_h"] = h_Clip[valid_mask]
+    cat_names = val["category_id"].map(cat_lookup)
+    cat_slugs = cat_names.map(category_slug)
 
-        W = val["canvas_width_px"].to_numpy()
-        H = val["canvas_height_px"].to_numpy()
-        x = val["raw_x"].to_numpy()
-        y = val["raw_y"].to_numpy()
-        w = val["raw_w"].to_numpy()
-        h = val["raw_h"].to_numpy()
+    elements_df = pd.DataFrame(
+        {
+            "poster_id": val["image_id"].to_numpy(dtype=np.int64),
+            "element_id": val["id"].to_numpy(dtype=np.int64),
+            "split": val["split"].to_numpy(),
+            "source_split": val["source_split"].to_numpy(),
+            "category_id": val["category_id"].to_numpy(dtype=np.int64),
+            "category_name": cat_names.to_numpy(),
+            "category_slug": cat_slugs.to_numpy(),
+            "is_unknown": (val["category_id"].to_numpy() == UNKNOWN_CAT_ID),
+            "canvas_width_px": W,
+            "canvas_height_px": H,
+            "raw_x": x,
+            "raw_y": y,
+            "raw_w": w,
+            "raw_h": h,
+            "x0": x0,
+            "y0": y0,
+            "x1": x1,
+            "y1": y1,
+            "w_norm": w_norm,
+            "h_norm": h_norm,
+            "cx": cx,
+            "cy": cy,
+            "area_norm": area_norm,
+            "bbox_aspect_ratio": bbox_aspect,
+            "log_w_norm": np.log(w_norm + EPS),
+            "log_h_norm": np.log(h_norm + EPS),
+            "log_area_norm": np.log(area_norm + EPS),
+            "log_bbox_aspect_ratio": np.log(bbox_aspect + EPS),
+            "left_margin": x0,
+            "right_margin": np.maximum(0.0, 1.0 - x1),
+            "top_margin": y0,
+            "bottom_margin": np.maximum(0.0, 1.0 - y1),
+        }
+    )
 
-        x0 = np.clip(x / W, 0.0, 1.0)
-        y0 = np.clip(y / H, 0.0, 1.0)
-        w_norm = np.clip(w / W, EPS, 1.0)
-        h_norm = np.clip(h / H, EPS, 1.0)
-        x1 = np.clip(x0 + w_norm, 0.0, 1.0)
-        y1 = np.clip(y0 + h_norm, 0.0, 1.0)
-        cx = np.clip(x0 + w_norm / 2.0, 0.0, 1.0)
-        cy = np.clip(y0 + h_norm / 2.0, 0.0, 1.0)
-        area_norm = w_norm * h_norm
-        bbox_aspect = w_norm / (h_norm + EPS)
+    elements_df["min_horizontal_margin"] = np.minimum(
+        elements_df["left_margin"], elements_df["right_margin"]
+    )
+    elements_df["min_vertical_margin"] = np.minimum(
+        elements_df["top_margin"], elements_df["bottom_margin"]
+    )
+    elements_df["center_dist_to_edge"] = np.minimum.reduce(
+        [
+            elements_df["cx"],
+            1.0 - elements_df["cx"],
+            elements_df["cy"],
+            1.0 - elements_df["cy"],
+        ]
+    )
 
-        cat_names = val["category_id"].map(cat_lookup)
-        cat_slugs = cat_names.map(category_slug)
+    # Within-poster relative size ranks and ratios
+    poster_med_area = elements_df.groupby("poster_id")["area_norm"].transform("median")
+    elements_df["ratio_to_poster_median_area"] = elements_df["area_norm"] / (poster_med_area + EPS)
+    elements_df["poster_area_rank_pct"] = elements_df.groupby("poster_id")["area_norm"].rank(
+        pct=True
+    )
+    elements_df["category_area_rank_pct"] = elements_df.groupby(["poster_id", "category_slug"])[
+        "area_norm"
+    ].rank(pct=True)
+    desc_rank = elements_df.groupby("poster_id")["area_norm"].rank(ascending=False, method="min")
+    elements_df["is_top3_largest"] = desc_rank <= 3
 
-        el_df = pd.DataFrame(
-            {
-                "poster_id": val["image_id"].to_numpy(dtype=np.int64),
-                "element_id": val["id"].to_numpy(dtype=np.int64),
-                "split": split,
-                "category_id": val["category_id"].to_numpy(dtype=np.int64),
-                "category_name": cat_names.to_numpy(),
-                "category_slug": cat_slugs.to_numpy(),
-                "is_unknown": (val["category_id"].to_numpy() == UNKNOWN_CAT_ID),
-                "canvas_width_px": W,
-                "canvas_height_px": H,
-                "raw_x": x,
-                "raw_y": y,
-                "raw_w": w,
-                "raw_h": h,
-                "x0": x0,
-                "y0": y0,
-                "x1": x1,
-                "y1": y1,
-                "w_norm": w_norm,
-                "h_norm": h_norm,
-                "cx": cx,
-                "cy": cy,
-                "area_norm": area_norm,
-                "bbox_aspect_ratio": bbox_aspect,
-                "log_w_norm": np.log(w_norm + EPS),
-                "log_h_norm": np.log(h_norm + EPS),
-                "log_area_norm": np.log(area_norm + EPS),
-                "log_bbox_aspect_ratio": np.log(bbox_aspect + EPS),
-                "left_margin": x0,
-                "right_margin": np.maximum(0.0, 1.0 - x1),
-                "top_margin": y0,
-                "bottom_margin": np.maximum(0.0, 1.0 - y1),
-            }
-        )
+    # Positional bins
+    elements_df["horiz_zone"] = np.select(
+        [elements_df["cx"] < 1.0 / 3.0, elements_df["cx"] <= 2.0 / 3.0],
+        ["left", "center"],
+        default="right",
+    )
+    elements_df["vert_zone"] = np.select(
+        [elements_df["cy"] < 0.25, elements_df["cy"] < 0.50, elements_df["cy"] < 0.75],
+        ["top", "upper_mid", "lower_mid"],
+        default="bottom",
+    )
+    gx = np.clip((elements_df["cx"].to_numpy() * 4).astype(int), 0, 3)
+    gy = np.clip((elements_df["cy"].to_numpy() * 4).astype(int), 0, 3)
+    elements_df["grid_4x4_cell"] = gy * 4 + gx
 
-        el_df["min_horizontal_margin"] = np.minimum(el_df["left_margin"], el_df["right_margin"])
-        el_df["min_vertical_margin"] = np.minimum(el_df["top_margin"], el_df["bottom_margin"])
-        el_df["center_dist_to_edge"] = np.minimum.reduce(
-            [el_df["cx"], 1.0 - el_df["cx"], el_df["cy"], 1.0 - el_df["cy"]]
-        )
-
-        # Within-poster relative size ranks and ratios
-        poster_med_area = el_df.groupby("poster_id")["area_norm"].transform("median")
-        el_df["ratio_to_poster_median_area"] = el_df["area_norm"] / (poster_med_area + EPS)
-        el_df["poster_area_rank_pct"] = el_df.groupby("poster_id")["area_norm"].rank(pct=True)
-        el_df["category_area_rank_pct"] = el_df.groupby(["poster_id", "category_slug"])[
-            "area_norm"
-        ].rank(pct=True)
-        desc_rank = el_df.groupby("poster_id")["area_norm"].rank(ascending=False, method="min")
-        el_df["is_top3_largest"] = desc_rank <= 3
-
-        # Positional bins
-        el_df["horiz_zone"] = np.select(
-            [el_df["cx"] < 1.0 / 3.0, el_df["cx"] <= 2.0 / 3.0],
-            ["left", "center"],
-            default="right",
-        )
-        el_df["vert_zone"] = np.select(
-            [el_df["cy"] < 0.25, el_df["cy"] < 0.50, el_df["cy"] < 0.75],
-            ["top", "upper_mid", "lower_mid"],
-            default="bottom",
-        )
-        gx = np.clip((el_df["cx"].to_numpy() * 4).astype(int), 0, 3)
-        gy = np.clip((el_df["cy"].to_numpy() * 4).astype(int), 0, 3)
-        el_df["grid_4x4_cell"] = gy * 4 + gx
-
-        valid_element_frames.append(el_df)
-
-        posters_with_valid = el_df["poster_id"].nunique()
+    quality_rows: list[dict[str, Any]] = []
+    for split in SPLITS:
+        split_imgs = images_by_split[split]
+        split_valid = elements_df[elements_df["split"] == split]
+        split_anns_count = int((ann_df["split"] == split).sum())
+        split_rej_count = int((rejected_df["split"] == split).sum()) if len(rejected_df) > 0 else 0
         quality_rows.append(
             {
                 "split": split,
-                "total_posters": len(images_df),
-                "posters_retained": len(images_df),
-                "posters_with_valid_elements": int(posters_with_valid),
-                "total_annotations": len(ann_df),
-                "valid_annotations": int(valid_mask.sum()),
-                "rejected_annotations": int((~valid_mask).sum()),
+                "total_posters": len(split_imgs),
+                "posters_retained": len(split_imgs),
+                "posters_with_valid_elements": int(split_valid["poster_id"].nunique()),
+                "total_annotations": split_anns_count,
+                "valid_annotations": len(split_valid),
+                "rejected_annotations": split_rej_count,
             }
         )
 
-    elements_df = pd.concat(valid_element_frames, ignore_index=True)
-    rejected_df = (
-        pd.concat(rejected_frames, ignore_index=True)
-        if rejected_frames
-        else pd.DataFrame()
-    )
-
-    # Fit category reference medians STRICTLY on train split
+    # Fit category reference medians STRICTLY on new train split
     train_els = elements_df[elements_df["split"] == "train"]
     train_cat_medians = (
         train_els.groupby("category_slug")[["w_norm", "h_norm", "area_norm"]]
@@ -320,9 +412,9 @@ def validate_and_extract_elements(
         .to_dict(orient="index")
     )
     global_train_medians = {
-        "w_norm": float(train_els["w_norm"].median()),
-        "h_norm": float(train_els["h_norm"].median()),
-        "area_norm": float(train_els["area_norm"].median()),
+        "w_norm": float(train_els["w_norm"].median()) if len(train_els) > 0 else 0.0,
+        "h_norm": float(train_els["h_norm"].median()) if len(train_els) > 0 else 0.0,
+        "area_norm": float(train_els["area_norm"].median()) if len(train_els) > 0 else 0.0,
     }
 
     ref_w = elements_df["category_slug"].map(
@@ -339,8 +431,20 @@ def validate_and_extract_elements(
     elements_df["ratio_h_to_train_cat_median"] = elements_df["h_norm"] / (ref_h + EPS)
     elements_df["ratio_area_to_train_cat_median"] = elements_df["area_norm"] / (ref_area + EPS)
 
+    source_to_new_counts = (
+        pooled_images_df.groupby(["source_split", "split"]).size().unstack(fill_value=0).to_dict()
+    )
+
     quality_summary = {
+        "split_policy": {
+            "mode": "pooled_resplit",
+            "source_splits": list(splits),
+            "split_ratios": list(split_ratios),
+            "random_state": random_state,
+            "stratify_by_orientation": stratify_by_orientation,
+        },
         "splits": quality_rows,
+        "source_split_to_new_split_counts": source_to_new_counts,
         "train_category_reference_medians": train_cat_medians,
         "rejected_by_reason": (
             rejected_df["rejection_reason"].value_counts().to_dict()
@@ -585,6 +689,7 @@ def build_posters_table(
     for _, img in all_images.iterrows():
         pid = int(img["id"])
         split = str(img["split"])
+        source_split = str(img["source_split"]) if "source_split" in img else split
         W = float(img["width"])
         H = float(img["height"])
         aspect = W / H
@@ -603,6 +708,7 @@ def build_posters_table(
             row: dict[str, Any] = {
                 "poster_id": pid,
                 "split": split,
+                "source_split": source_split,
                 "canvas_width_px": W,
                 "canvas_height_px": H,
                 "aspect_ratio": aspect,
@@ -639,6 +745,7 @@ def build_posters_table(
         row = {
             "poster_id": pid,
             "split": split,
+            "source_split": source_split,
             "canvas_width_px": W,
             "canvas_height_px": H,
             "aspect_ratio": aspect,
@@ -884,6 +991,7 @@ def generate_feature_schema_metadata(posters_df: pd.DataFrame, elements_df: pd.D
     non_feature_poster_cols = {
         "poster_id",
         "split",
+        "source_split",
         "canvas_width_px",
         "canvas_height_px",
         "orientation",
@@ -1008,11 +1116,11 @@ def export_legacy_v1_compatible_parquets(
     posters_df: pd.DataFrame,
     elements_df: pd.DataFrame,
     legacy_out_dir: Path,
+    overwrite: bool = True,
 ) -> None:
-    """Ensure legacy v1 parquet files exist so v1 scripts continue to work without error."""
+    """Ensure legacy v1 parquet files exist and stay aligned with current splits."""
     legacy_out_dir.mkdir(parents=True, exist_ok=True)
-    # Check if already present
-    if (legacy_out_dir / "train_features.parquet").exists():
+    if not overwrite and (legacy_out_dir / "train_features.parquet").exists():
         return
 
     # Reconstruct the 92 legacy columns from elements_df & posters_df
@@ -1089,6 +1197,9 @@ def run_feature_pipeline_v2(
     raw_dir: str | Path,
     out_dir: str | Path,
     export_legacy: bool = True,
+    split_ratios: tuple[float, float, float] = DEFAULT_SPLIT_RATIOS,
+    random_state: int = 42,
+    stratify_by_orientation: bool = True,
 ) -> dict[str, Any]:
     """Execute the full v2 multi-table feature engineering pipeline and save artifacts."""
     t0 = time.time()
@@ -1096,9 +1207,12 @@ def run_feature_pipeline_v2(
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
-    print("[1/4] Validating annotations and building canonical elements table...")
+    print("[1/4] Pooling source splits, assigning 70/15/15 splits, and validating elements...")
     images_by_split, elements_df, rejected_df, quality_summary = validate_and_extract_elements(
-        raw_path
+        raw_path,
+        split_ratios=split_ratios,
+        random_state=random_state,
+        stratify_by_orientation=stratify_by_orientation,
     )
 
     print("[2/4] Building sparse pairwise spatial relations graph...")

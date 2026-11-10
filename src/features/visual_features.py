@@ -152,27 +152,29 @@ def extract_visual_features_for_sample(
         else {}
     )
 
+    # Preload id -> (source_split, file_name) across all COCO JSONs so resplit tables resolve cleanly
+    id_to_asset: dict[int, tuple[str, str]] = {}
+    for src_split in ("train", "dev", "test"):
+        json_path = png_root / f"{src_split}.json"
+        if json_path.exists():
+            with open(json_path, "r", encoding="utf-8") as f:
+                coco_meta = json.load(f)
+            for im in coco_meta.get("images", []):
+                id_to_asset[int(im["id"])] = (src_split, str(im["file_name"]))
+
     records: list[dict[str, Any]] = []
     for split in ("train", "dev", "test"):
         sub = posters_df[posters_df["split"] == split]
         if len(sub) == 0:
             continue
 
-        # Load id -> file_name mapping from split JSON
-        json_path = png_root / f"{split}.json"
-        id_to_fname: dict[int, str] = {}
-        if json_path.exists():
-            with open(json_path, "r", encoding="utf-8") as f:
-                coco_meta = json.load(f)
-            id_to_fname = {int(im["id"]): str(im["file_name"]) for im in coco_meta["images"]}
-
         n_pick = min(max_per_split, len(sub))
         sampled_ids = rng.choice(sub["poster_id"].to_numpy(), size=n_pick, replace=False)
 
         for pid in sampled_ids:
             pid_int = int(pid)
-            fname = id_to_fname.get(pid_int, f"{pid_int}.png")
-            img_path = png_root / split / fname
+            src_split, fname = id_to_asset.get(pid_int, (split, f"{pid_int}.png"))
+            img_path = png_root / src_split / fname
             if not img_path.exists():
                 continue
             try:

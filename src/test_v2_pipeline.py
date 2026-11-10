@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+from src.features.pipeline_v2 import run_feature_pipeline_v2
 
 from src.features.request_schema import (
     ContentBlockDemand,
@@ -39,12 +42,21 @@ class TestInfographixV2Pipeline(unittest.TestCase):
         cls.schema = json.loads((V2_DIR / "feature_schema.json").read_text(encoding="utf-8"))
 
     def test_v2_tables_completeness_and_no_dropped_posters(self):
-        """Verify all 7,855 posters are preserved across train/dev/test with valid schemas."""
+        """Verify all 7,855 posters are preserved across the pooled 70/15/15 train/dev/test splits."""
         self.assertEqual(len(self.posters_df), 7855)
         split_counts = self.posters_df["split"].value_counts().to_dict()
-        self.assertEqual(split_counts["train"], 6855)
-        self.assertEqual(split_counts["dev"], 500)
-        self.assertEqual(split_counts["test"], 500)
+        self.assertEqual(split_counts["train"], 5498)
+        self.assertEqual(split_counts["dev"], 1178)
+        self.assertEqual(split_counts["test"], 1179)
+
+        # Ensure poster_ids are strictly disjoint across splits and match elements_df splits
+        train_pids = set(self.posters_df.loc[self.posters_df["split"] == "train", "poster_id"])
+        dev_pids = set(self.posters_df.loc[self.posters_df["split"] == "dev", "poster_id"])
+        test_pids = set(self.posters_df.loc[self.posters_df["split"] == "test", "poster_id"])
+        self.assertEqual(len(train_pids & dev_pids), 0)
+        self.assertEqual(len(train_pids & test_pids), 0)
+        self.assertEqual(len(dev_pids & test_pids), 0)
+        self.assertIn("source_split", self.posters_df.columns)
 
         self.assertGreater(len(self.elements_df), 192500)
         self.assertGreater(len(self.relations_df), 500000)
@@ -56,6 +68,39 @@ class TestInfographixV2Pipeline(unittest.TestCase):
         ov_ex = self.posters_df["overlap_excess"].dropna()
         self.assertTrue(((cov >= 0.0) & (cov <= 1.0)).all())
         self.assertTrue((ov_ex >= 0.0).all())
+
+    def test_pooled_resplit_70_15_15_no_leakage(self):
+        """Verify pooling source JSONs and resplitting 70/15/15 is deterministic and poster-disjoint."""
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp) / "raw"
+            out = Path(tmp) / "out" / "v2"
+            raw.mkdir(parents=True)
+            cats = [{"id": 487601213, "name": "Title"}, {"id": 2871247081, "name": "Text"}]
+            aid, pid = 1, 100
+            for src_split, count in [("train", 10), ("dev", 5), ("test", 5)]:
+                imgs, anns = [], []
+                for i in range(count):
+                    pid += 1
+                    w, h = (800, 1200) if i % 2 == 0 else (1200, 800)
+                    imgs.append({"id": pid, "width": w, "height": h, "file_name": f"{pid}.png"})
+                    anns.append({"id": aid, "image_id": pid, "category_id": 487601213, "bbox": [50, 50, 400, 80], "area": 32000})
+                    aid += 1
+                    anns.append({"id": aid, "image_id": pid, "category_id": 2871247081, "bbox": [50, 200, 300, 400], "area": 120000})
+                    aid += 1
+                (raw / f"{src_split}.json").write_text(
+                    json.dumps({"images": imgs, "annotations": anns, "categories": cats}),
+                    encoding="utf-8",
+                )
+
+            res = run_feature_pipeline_v2(raw, out, export_legacy=True)
+            p_df = res["posters"]
+            e_df = res["elements"]
+            self.assertEqual(p_df["split"].value_counts().to_dict(), {"train": 14, "dev": 3, "test": 3})
+            # Every element's split must match its poster's split
+            merged = e_df[["poster_id", "split"]].merge(
+                p_df[["poster_id", "split"]], on="poster_id", suffixes=("_el", "_p")
+            )
+            self.assertTrue((merged["split_el"] == merged["split_p"]).all())
 
     def test_request_schema_and_typography_estimator(self):
         """Verify width-dependent text height estimation and request compatibility scoring."""
