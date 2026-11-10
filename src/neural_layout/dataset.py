@@ -70,7 +70,11 @@ class UserContentItem:
     shuffled_order_idx: int = 0  # Decoupled from ground-truth reading order
     sample_text: str = ""
 
-    def to_feature_vector(self, total_items: int = 1) -> np.ndarray:
+    def to_feature_vector(
+        self,
+        total_items: int = 1,
+        include_order_index: bool = True,
+    ) -> np.ndarray:
         """18-dimensional leak-free content representation vector.
 
         Structure:
@@ -83,7 +87,7 @@ class UserContentItem:
           - Dim 14: table_rows / 10.0
           - Dim 15: table_cols / 10.0
           - Dim 16: priority (0.1 to 1.0)
-          - Dim 17: shuffled_order_idx / total_items (decoupled input index)
+          - Dim 17: shuffled_order_idx / total_items if include_order_index else 0.0
         """
         one_hot = np.zeros(NUM_CATEGORIES, dtype=np.float32)
         if 0 <= self.category_idx < NUM_CATEGORIES:
@@ -95,6 +99,11 @@ class UserContentItem:
 
         asp_val = float(self.aspect_ratio) if self.has_aspect_ratio else 1.0
         has_asp = 1.0 if self.has_aspect_ratio else 0.0
+        order_val = (
+            float(self.shuffled_order_idx / max(1, total_items))
+            if include_order_index
+            else 0.0
+        )
 
         extra_feats = np.array([
             w_val,
@@ -105,7 +114,7 @@ class UserContentItem:
             float(self.table_rows / 10.0),
             float(self.table_cols / 10.0),
             float(self.priority),
-            float(self.shuffled_order_idx / max(1, total_items)),
+            order_val,
         ], dtype=np.float32)
 
         return np.concatenate([one_hot, extra_feats], axis=0)  # Total: 9 + 9 = 18 dims
@@ -156,6 +165,7 @@ class NeuralLayoutSample:
     target_boxes: np.ndarray  # [M, 4] normalized [x0, y0, w, h]
     target_columns: np.ndarray  # [M] integer column index
     target_reading_orders: np.ndarray  # [M] integer reading order index
+    element_ids: list[int] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -188,6 +198,7 @@ class NeuralLayoutSample:
 
 
 _POSTER_ID_TO_PDF_CACHE: dict[int, Path] = {}
+_SCANNED_COCO_META_DIRS: set[Path] = set()
 
 
 def get_pdf_path_for_poster_id(
@@ -210,10 +221,11 @@ def get_pdf_path_for_poster_id(
             _POSTER_ID_TO_PDF_CACHE[poster_id] = cand
             return cand
 
-    # Load mapping from png/{split}.json if available
+    # Load mapping from png/{split}.json once per coco_meta_dir
     coco_meta_dir = pdf_base_dir.parent / "png"
-    if coco_meta_dir.exists():
-        for s in [split, "train", "dev", "test"]:
+    if coco_meta_dir.exists() and coco_meta_dir not in _SCANNED_COCO_META_DIRS:
+        _SCANNED_COCO_META_DIRS.add(coco_meta_dir)
+        for s in ["train", "dev", "test"]:
             json_path = coco_meta_dir / f"{s}.json"
             if json_path.exists():
                 try:
@@ -226,12 +238,10 @@ def get_pdf_path_for_poster_id(
                         target_pdf = pdf_base_dir / s / f"{stem}.pdf"
                         if target_pdf.exists():
                             _POSTER_ID_TO_PDF_CACHE[iid] = target_pdf
-                    if poster_id in _POSTER_ID_TO_PDF_CACHE:
-                        return _POSTER_ID_TO_PDF_CACHE[poster_id]
                 except Exception:
                     pass
 
-    return None
+    return _POSTER_ID_TO_PDF_CACHE.get(poster_id)
 
 
 def extract_pdf_blocks_via_pdftotext(pdf_path: Path) -> list[dict[str, Any]]:
@@ -369,11 +379,42 @@ def match_pdf_text_to_elements(
     return matched_results
 
 
+def compute_target_overlap_exempt_mask(
+    target_boxes: np.ndarray,
+    iou_thresh: float = 0.02,
+) -> np.ndarray:
+    """Identify ground-truth element pairs that genuinely overlap/contain each other."""
+    m = len(target_boxes)
+    if m <= 1:
+        return np.zeros((m, m), dtype=bool)
+
+    x0 = target_boxes[:, 0]
+    y0 = target_boxes[:, 1]
+    w = target_boxes[:, 2]
+    h = target_boxes[:, 3]
+    x1 = x0 + w
+    y1 = y0 + h
+    area = w * h
+
+    ix0 = np.maximum(x0[:, None], x0[None, :])
+    iy0 = np.maximum(y0[:, None], y0[None, :])
+    ix1 = np.minimum(x1[:, None], x1[None, :])
+    iy1 = np.minimum(y1[:, None], y1[None, :])
+
+    inter = np.maximum(0.0, ix1 - ix0) * np.maximum(0.0, iy1 - iy0)
+    union = np.maximum(1e-6, area[:, None] + area[None, :] - inter)
+    iou = inter / union
+    np.fill_diagonal(iou, 0.0)
+    return iou > iou_thresh
+
+
 def build_synthetic_request_and_sample(
     target_poster_row: pd.Series | dict[str, Any],
     target_elements_df: pd.DataFrame,
     retriever_model: LayoutRetriever,
     pdf_base_dir: Path | None = None,
+    elements_by_poster: dict[int, pd.DataFrame] | None = None,
+    use_pdf_extraction: bool = True,
 ) -> NeuralLayoutSample:
     """Construct one strictly leak-free synthetic training sample from a ground-truth poster.
 
@@ -387,10 +428,20 @@ def build_synthetic_request_and_sample(
     """
     pid = int(target_poster_row["poster_id"])
     split = str(target_poster_row.get("split", "train"))
+    source_split = str(target_poster_row.get("source_split", split))
     c_aspect = float(target_poster_row.get("aspect_ratio", 1.414))
-    k_cols = int(round(float(target_poster_row.get("estimated_column_count", 3))))
+    raw_k = target_poster_row.get("estimated_column_count", 3)
+    k_cols = 3 if pd.isna(raw_k) else int(round(float(raw_k)))
+    k_cols = max(1, min(5, k_cols))
 
-    p_els = target_elements_df[target_elements_df["poster_id"] == pid].copy()
+    if elements_by_poster is not None:
+        p_els = elements_by_poster.get(pid, target_elements_df.iloc[0:0]).copy()
+    else:
+        p_els = target_elements_df[target_elements_df["poster_id"] == pid].copy()
+
+    if len(p_els) == 0:
+        raise ValueError(f"Poster {pid} has 0 valid elements and cannot form a layout sample.")
+
     # Sort ground-truth target elements in true visual reading order (top-to-bottom, left-to-right)
     p_els = p_els.sort_values(by=["y0", "x0"]).reset_index(drop=True)
 
@@ -398,15 +449,17 @@ def build_synthetic_request_and_sample(
     matched_text_lookup: dict[int, dict[str, Any]] = {}
     intrinsic_images: list[dict[str, Any]] = []
 
-    pdf_path = get_pdf_path_for_poster_id(pid, split=split, pdf_base_dir=pdf_base_dir)
-    if pdf_path is not None and pdf_path.exists():
-        pdf_blocks = extract_pdf_blocks_via_pdftotext(pdf_path)
-        if pdf_blocks:
-            matched_text_lookup = match_pdf_text_to_elements(pdf_blocks, p_els)
-        intrinsic_images = extract_intrinsic_image_aspect_ratios(pdf_path)
+    if use_pdf_extraction and pdf_base_dir is not None:
+        pdf_path = get_pdf_path_for_poster_id(pid, split=source_split, pdf_base_dir=pdf_base_dir)
+        if pdf_path is not None and pdf_path.exists():
+            pdf_blocks = extract_pdf_blocks_via_pdftotext(pdf_path)
+            if pdf_blocks:
+                matched_text_lookup = match_pdf_text_to_elements(pdf_blocks, p_els)
+            intrinsic_images = extract_intrinsic_image_aspect_ratios(pdf_path)
 
     # 2. Build Unordered Content Demands & Supervision Targets
     raw_content_items: list[UserContentItem] = []
+    raw_element_ids: list[int] = []
     target_boxes_list: list[list[float]] = []
     target_columns_list: list[int] = []
     target_reading_orders_list: list[int] = []
@@ -415,6 +468,7 @@ def build_synthetic_request_and_sample(
 
     for true_reading_idx, (_, el) in enumerate(p_els.iterrows()):
         eid = int(el["element_id"])
+        raw_element_ids.append(eid)
         cslug = str(el.get("category_slug", "text")).lower()
         cidx = CATEGORY_TO_IDX.get(cslug, CATEGORY_TO_IDX["text"])
 
@@ -426,7 +480,7 @@ def build_synthetic_request_and_sample(
         target_boxes_list.append([bx, by, bw, bh])
 
         cx = float(el.get("cx", bx + bw / 2.0))
-        target_col = int(min(k_cols - 1, max(0, int(cx * k_cols))))
+        target_col = int(min(4, max(0, int(cx * k_cols))))
         target_columns_list.append(target_col)
         target_reading_orders_list.append(true_reading_idx)
 
@@ -494,6 +548,7 @@ def build_synthetic_request_and_sample(
     perm = rng.permutation(num_items)
 
     shuffled_content_items: list[UserContentItem] = []
+    shuffled_element_ids: list[int] = []
     shuffled_target_boxes: list[list[float]] = []
     shuffled_target_columns: list[int] = []
     shuffled_target_reading_orders: list[int] = []
@@ -504,6 +559,7 @@ def build_synthetic_request_and_sample(
         orig_item.shuffled_order_idx = new_input_pos
 
         shuffled_content_items.append(orig_item)
+        shuffled_element_ids.append(raw_element_ids[orig_idx])
         shuffled_target_boxes.append(target_boxes_list[orig_idx])
         shuffled_target_columns.append(target_columns_list[orig_idx])
         shuffled_target_reading_orders.append(target_reading_orders_list[orig_idx])
@@ -539,11 +595,15 @@ def build_synthetic_request_and_sample(
     template_pid = int(chosen_template_row["poster_id"])
 
     # Extract template slots from elements_df
-    t_els = target_elements_df[target_elements_df["poster_id"] == template_pid].copy()
+    if elements_by_poster is not None:
+        t_els = elements_by_poster.get(template_pid, target_elements_df.iloc[0:0]).copy()
+    else:
+        t_els = target_elements_df[target_elements_df["poster_id"] == template_pid].copy()
     t_els = t_els.sort_values(by=["y0", "x0"]).reset_index(drop=True)
 
     template_slots: list[TemplateSlotItem] = []
-    t_k_cols = int(round(float(chosen_template_row.get("estimated_column_count", 3))))
+    raw_tk = chosen_template_row.get("estimated_column_count", 3)
+    t_k_cols = 3 if pd.isna(raw_tk) else max(1, min(5, int(round(float(raw_tk)))))
 
     for _, tel in t_els.iterrows():
         tcslug = str(tel.get("category_slug", "text")).lower()
@@ -579,6 +639,7 @@ def build_synthetic_request_and_sample(
         target_boxes=np.array(shuffled_target_boxes, dtype=np.float32),
         target_columns=np.array(shuffled_target_columns, dtype=np.int64),
         target_reading_orders=np.array(shuffled_target_reading_orders, dtype=np.int64),
+        element_ids=shuffled_element_ids,
     )
 
 
@@ -593,15 +654,28 @@ class PosterLayoutDataset(Dataset):
         split: str = "train",
         pdf_base_dir: Path | None = None,
         max_samples: int | None = None,
+        include_order_index: bool = True,
+        use_pdf_extraction: bool = True,
+        elements_by_poster: dict[int, pd.DataFrame] | None = None,
     ):
         self.split = split
-        self.split_posters = posters_df[posters_df["split"] == split].copy().reset_index(drop=True)
+        mask = posters_df["split"] == split
+        if "total_element_count" in posters_df.columns:
+            mask = mask & (posters_df["total_element_count"] > 0)
+        self.split_posters = posters_df[mask].copy().reset_index(drop=True)
         if max_samples is not None:
             self.split_posters = self.split_posters.iloc[:max_samples].copy().reset_index(drop=True)
 
         self.elements_df = elements_df
+        self.elements_by_poster = (
+            elements_by_poster
+            if elements_by_poster is not None
+            else {int(pid): grp for pid, grp in elements_df.groupby("poster_id", sort=False)}
+        )
         self.retriever_model = retriever_model
         self.pdf_base_dir = pdf_base_dir
+        self.include_order_index = include_order_index
+        self.use_pdf_extraction = use_pdf_extraction
         self._cache: dict[int, dict[str, torch.Tensor]] = {}
 
     def __len__(self) -> int:
@@ -617,14 +691,23 @@ class PosterLayoutDataset(Dataset):
             target_elements_df=self.elements_df,
             retriever_model=self.retriever_model,
             pdf_base_dir=self.pdf_base_dir,
+            elements_by_poster=self.elements_by_poster,
+            use_pdf_extraction=self.use_pdf_extraction,
         )
 
         total_items = len(sample.content_items)
         content_feats = np.stack(
-            [item.to_feature_vector(total_items=total_items) for item in sample.content_items],
+            [
+                item.to_feature_vector(
+                    total_items=total_items,
+                    include_order_index=self.include_order_index,
+                )
+                for item in sample.content_items
+            ],
             axis=0,
         )
         template_feats = np.stack([slot.to_feature_vector() for slot in sample.template_slots], axis=0)
+        exempt_mask = compute_target_overlap_exempt_mask(sample.target_boxes)
 
         res = {
             "content_feats": torch.from_numpy(content_feats),          # [M, 18]
@@ -632,6 +715,8 @@ class PosterLayoutDataset(Dataset):
             "target_boxes": torch.from_numpy(sample.target_boxes),      # [M, 4]
             "target_columns": torch.from_numpy(sample.target_columns),  # [M]
             "target_orders": torch.from_numpy(sample.target_reading_orders),  # [M]
+            "target_overlap_exempt_mask": torch.from_numpy(exempt_mask),      # [M, M]
+            "element_ids": torch.tensor(sample.element_ids, dtype=torch.long),  # [M]
             "macro_target": torch.tensor(max(0, min(4, sample.target_column_count - 1)), dtype=torch.long),  # 0..4
             "num_content": torch.tensor(len(sample.content_items), dtype=torch.long),
             "num_template": torch.tensor(len(sample.template_slots), dtype=torch.long),
@@ -656,11 +741,15 @@ def collate_layout_batch(batch: list[dict[str, torch.Tensor]]) -> dict[str, torc
     padded_target_boxes = torch.zeros(batch_size, max_m, 4, dtype=torch.float32)
     padded_target_cols = torch.zeros(batch_size, max_m, dtype=torch.long)
     padded_target_orders = torch.zeros(batch_size, max_m, dtype=torch.long)
+    padded_element_ids = torch.full((batch_size, max_m), -1, dtype=torch.long)
+    padded_exempt_mask = torch.zeros(batch_size, max_m, max_m, dtype=torch.bool)
 
     content_mask = torch.zeros(batch_size, max_m, dtype=torch.bool)
     template_mask = torch.zeros(batch_size, max_k, dtype=torch.bool)
 
     macro_targets = torch.stack([item["macro_target"] for item in batch], dim=0)
+    target_poster_ids = torch.stack([item["target_poster_id"] for item in batch], dim=0)
+    template_poster_ids = torch.stack([item["template_poster_id"] for item in batch], dim=0)
 
     for i, item in enumerate(batch):
         m_len = item["content_feats"].shape[0]
@@ -671,6 +760,10 @@ def collate_layout_batch(batch: list[dict[str, torch.Tensor]]) -> dict[str, torc
         padded_target_boxes[i, :m_len] = item["target_boxes"]
         padded_target_cols[i, :m_len] = item["target_columns"]
         padded_target_orders[i, :m_len] = item["target_orders"]
+        if "element_ids" in item:
+            padded_element_ids[i, :m_len] = item["element_ids"]
+        if "target_overlap_exempt_mask" in item:
+            padded_exempt_mask[i, :m_len, :m_len] = item["target_overlap_exempt_mask"]
 
         content_mask[i, :m_len] = True
         template_mask[i, :k_len] = True
@@ -683,5 +776,9 @@ def collate_layout_batch(batch: list[dict[str, torch.Tensor]]) -> dict[str, torc
         "target_boxes": padded_target_boxes,         # [B, max_M, 4]
         "target_columns": padded_target_cols,       # [B, max_M]
         "target_orders": padded_target_orders,       # [B, max_M]
+        "target_overlap_exempt_mask": padded_exempt_mask,  # [B, max_M, max_M]
+        "element_ids": padded_element_ids,           # [B, max_M] (-1 where padded)
         "macro_targets": macro_targets,             # [B]
+        "target_poster_ids": target_poster_ids,     # [B]
+        "template_poster_ids": template_poster_ids, # [B]
     }

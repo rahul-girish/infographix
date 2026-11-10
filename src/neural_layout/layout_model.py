@@ -28,10 +28,20 @@ class TemplateConditionedLayoutModel(nn.Module):
         ffn_dim: int = 256,
         num_columns: int = 5,
         dropout: float = 0.1,
+        bbox_parameterization: str = "independent",
+        use_anchor_conditioning: bool = False,
+        min_box_width: float = 0.01,
+        min_box_height: float = 0.005,
     ):
         super().__init__()
+        self.content_dim = content_dim
+        self.template_dim = template_dim
         self.d_model = d_model
         self.num_columns = num_columns
+        self.bbox_parameterization = bbox_parameterization
+        self.use_anchor_conditioning = use_anchor_conditioning
+        self.min_box_width = float(min_box_width)
+        self.min_box_height = float(min_box_height)
 
         self.content_encoder = ContentEncoder(
             input_dim=content_dim,
@@ -58,6 +68,10 @@ class TemplateConditionedLayoutModel(nn.Module):
             ffn_dim=ffn_dim,
             num_columns=num_columns,
             dropout=dropout,
+            bbox_parameterization=bbox_parameterization,
+            use_anchor_conditioning=use_anchor_conditioning,
+            min_box_width=min_box_width,
+            min_box_height=min_box_height,
         )
 
     def forward(
@@ -85,12 +99,27 @@ class TemplateConditionedLayoutModel(nn.Module):
         content_embeds, macro_embed = self.content_encoder(content_feats, content_mask)
         template_embeds = self.template_encoder(template_feats, template_mask)
 
+        template_boxes = template_feats[..., 9:13] if template_feats.shape[-1] >= 13 else None
+        content_cat_ids = (
+            torch.argmax(content_feats[..., :9], dim=-1)
+            if content_feats.shape[-1] >= 9
+            else None
+        )
+        template_cat_ids = (
+            torch.argmax(template_feats[..., :9], dim=-1)
+            if template_feats.shape[-1] >= 9
+            else None
+        )
+
         predictions = self.decoder(
             content_embeds=content_embeds,
             template_embeds=template_embeds,
             content_mask=content_mask,
             template_mask=template_mask,
             macro_embed=macro_embed,
+            template_boxes=template_boxes,
+            content_cat_ids=content_cat_ids,
+            template_cat_ids=template_cat_ids,
         )
 
         return predictions

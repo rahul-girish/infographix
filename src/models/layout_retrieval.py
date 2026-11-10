@@ -21,7 +21,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances
 from sklearn.preprocessing import RobustScaler
 
-from src.features.pipeline_v2 import EPS, KNOWN_CATEGORY_SLUGS
+from src.features.config import EPS, KNOWN_CATEGORY_SLUGS
 from src.features.request_schema import (
     PosterRequest,
     compute_request_candidate_compatibility,
