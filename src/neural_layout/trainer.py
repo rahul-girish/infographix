@@ -101,6 +101,9 @@ class TrainingConfig:
     min_box_width: float = 0.01
     min_box_height: float = 0.005
     include_order_index: bool = True
+    retriever_model_name: str = "poster_layout_retriever"
+    retriever_model_id: str | None = None
+    retriever_version: str | None = None
     loss_weights: LossWeights = field(default_factory=LossWeights)
     checkpoint_dir: Path = Path("models/checkpoints/neural_layout")
     project_name: str = "Infographix"
@@ -283,6 +286,17 @@ class LayoutTrainer:
             "dataset/version": self.config.dataset_version,
             "dataset/train_samples": len(self.train_dataset),
             "dataset/val_samples": len(self.val_dataset) if self.val_dataset is not None else 0,
+            "retriever/model_name": self.config.retriever_model_name,
+            "retriever/model_id": (
+                self.config.retriever_model_id
+                or getattr(getattr(self.train_dataset, "retriever_model", None), "clearml_model_id", None)
+                or "unregistered"
+            ),
+            "retriever/version": (
+                self.config.retriever_version
+                or getattr(getattr(self.train_dataset, "retriever_model", None), "clearml_model_version", None)
+                or "unknown"
+            ),
             "environment/git_commit": git_info["git_commit"],
             "environment/git_branch": git_info["git_branch"],
             "environment/git_dirty": git_info["git_dirty"],
@@ -482,6 +496,12 @@ class LayoutTrainer:
             "min_box_width": float(getattr(self.model, "min_box_width", 0.01)),
             "min_box_height": float(getattr(self.model, "min_box_height", 0.005)),
         }
+        retriever_obj = getattr(self.train_dataset, "retriever_model", None)
+        retriever_info = {
+            "model_name": self.config.retriever_model_name,
+            "model_id": self.config.retriever_model_id or getattr(retriever_obj, "clearml_model_id", None),
+            "version": self.config.retriever_version or getattr(retriever_obj, "clearml_model_version", None),
+        }
         state = {
             "epoch": epoch,
             "model_state_dict": self.model.state_dict(),
@@ -491,6 +511,7 @@ class LayoutTrainer:
             "metrics": metrics,
             "config": self.config,
             "model_config": model_config,
+            "retriever_info": retriever_info,
             "clearml_task_id": clearml_tid,
         }
         torch.save(state, ckpt_path)

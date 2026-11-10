@@ -27,20 +27,31 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import joblib
 import numpy as np
+import pandas as pd
 import torch
 
+from src.features.config import KNOWN_CATEGORY_SLUGS
+from src.features.request_schema import ContentBlockDemand, PosterRequest
+from src.models.layout_retrieval import LayoutRetriever
 from src.neural_layout.layout_model import TemplateConditionedLayoutModel
 from src.neural_layout.losses import LossWeights
 from src.neural_layout.trainer import TrainingConfig, set_seed
 from src.registry.clearml_registry import (
     build_model_bundle,
     build_model_name,
+    build_retriever_bundle,
     compute_sha256,
+    compute_train_poster_ids_sha256,
+    extract_training_config_from_checkpoint,
     load_registered_model,
+    load_registered_retriever,
+    migrate_local_retriever_to_clearml,
     normalize_version,
     query_registered_models,
     register_model,
+    register_retriever_model,
     set_model_lifecycle_status,
     verify_bundle_checksums,
     verify_checkpoint_provenance,
@@ -345,6 +356,330 @@ class TestClearMLRegistryUnit(unittest.TestCase):
         with patch("src.registry.clearml_registry.Model.query_models", return_value=[m1, m2]):
             with self.assertRaises(ValueError):
                 load_registered_model(semantic_version="0.1.0")
+
+
+def _make_synthetic_posters_df(split: str = "train", start_id: int = 100, count: int = 12) -> pd.DataFrame:
+    """Construct a minimal DataFrame satisfying all LayoutRetriever feature columns."""
+    rows = []
+    for i in range(count):
+        is_port = (i % 2 == 0)
+        aspect = 0.71 if is_port else 1.41
+        row = {
+            "poster_id": start_id + i,
+            "split": split,
+            "orientation": "portrait" if is_port else "landscape",
+            "aspect_ratio": aspect,
+            "log_aspect_ratio": float(np.log(aspect)),
+            "is_landscape": 0.0 if is_port else 1.0,
+            "is_portrait": 1.0 if is_port else 0.0,
+            "known_element_count": 10 + (i % 5),
+            "visual_element_count": 2 + (i % 2),
+            "textual_element_count": 5,
+            "heading_element_count": 2,
+            "media_to_text_count_ratio": 0.4,
+            "visual_area_sum": 0.25,
+            "textual_area_sum": 0.35,
+            "header_area_sum": 0.10,
+            "sum_box_area_fraction": 0.70,
+            "visual_to_body_area_ratio": 0.42,
+            "area_norm_p25": 0.02,
+            "area_norm_p50": 0.05,
+            "area_norm_p75": 0.12,
+            "w_norm_p50": 0.28,
+            "h_norm_p50": 0.15,
+            "estimated_column_count": 2 if is_port else 3,
+            "union_box_coverage": 0.65,
+            "horiz_profile_symmetry": 0.85,
+            "frac_aligned_left": 0.40,
+            "count_title": 1,
+            "count_section": 2,
+            "count_text": 3,
+            "count_list": 1,
+            "count_figure": 2,
+            "count_table": 0,
+            "count_caption": 2,
+        }
+        for slug in KNOWN_CATEGORY_SLUGS:
+            row[f"log1p_count_{slug}"] = float(np.log1p(row.get(f"count_{slug}", 1)))
+            row[f"fraction_{slug}"] = 0.1
+            row[f"area_sum_{slug}"] = 0.08
+        for r in range(4):
+            for c in range(4):
+                row[f"occ_grid_r{r}_c{c}"] = 0.5 + 0.01 * ((i + r + c) % 4)
+        for b in range(16):
+            row[f"horiz_occ_{b:02d}"] = 0.5
+            row[f"vert_occ_{b:02d}"] = 0.5
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+class TestClearMLRetrieverRegistryUnit(unittest.TestCase):
+    """Unit tests for ClearML registration, verification, and loading of LayoutRetriever."""
+
+    def setUp(self):
+        self.train_df = _make_synthetic_posters_df(split="train", start_id=100, count=14)
+        self.retriever = LayoutRetriever(mmr_lambda=0.78, strict_orientation=True).fit(self.train_df)
+        self.sample_request = PosterRequest(
+            request_id="req_test_01",
+            requested_aspect_ratio=0.71,
+            requested_orientation="portrait",
+            blocks=[
+                ContentBlockDemand("b1", "title", "title", word_count=12),
+                ContentBlockDemand("b2", "text", "text", word_count=120),
+                ContentBlockDemand("b3", "figure", "figure", aspect_ratio=1.3),
+            ],
+        )
+
+    def test_retriever_bundle_checksums_and_anti_leakage_guard(self):
+        """Verify retriever bundle creation, SHA-256 verification, and train-only split guard."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle_dir = Path(tmp) / "ret_bundle"
+            manifest = build_retriever_bundle(
+                bundle_dir=bundle_dir,
+                retriever_model=self.retriever,
+                training_task_id="task_ret_001",
+                dataset_identifier="SciPostLayout v2 (70/15/15)",
+                semantic_version="2.1.0",
+                validation_metrics={"orientation_match_at_k": 1.0},
+            )
+            self.assertTrue((bundle_dir / "retriever.joblib").exists())
+            self.assertTrue((bundle_dir / "model_config.json").exists())
+            self.assertTrue((bundle_dir / "feature_schema.json").exists())
+            self.assertTrue((bundle_dir / "preprocessing_config.json").exists())
+            self.assertEqual(manifest["model_config"]["architecture"], "LayoutRetriever")
+            self.assertEqual(
+                manifest["model_config"]["train_poster_ids_sha256"],
+                compute_train_poster_ids_sha256(self.train_df),
+            )
+            verified = verify_bundle_checksums(bundle_dir)
+            self.assertEqual(verified["semantic_version"], "2.1.0")
+
+            # Corrupt joblib artifact -> must raise ValueError
+            (bundle_dir / "retriever.joblib").write_bytes(b"corrupted")
+            with self.assertRaises(ValueError):
+                verify_bundle_checksums(bundle_dir)
+
+        # Unfitted retriever -> must raise ValueError
+        unfitted = LayoutRetriever()
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError):
+                build_retriever_bundle(
+                    bundle_dir=Path(tmp) / "bad",
+                    retriever_model=unfitted,
+                    training_task_id="t",
+                    dataset_identifier="d",
+                    semantic_version="1.0.0",
+                )
+
+        # Retriever containing dev/test rows -> must fail train-only guard
+        leaked_df = pd.concat([self.train_df, _make_synthetic_posters_df(split="dev", start_id=900, count=2)], ignore_index=True)
+        leaked_ret = LayoutRetriever().fit(leaked_df)
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError):
+                build_retriever_bundle(
+                    bundle_dir=Path(tmp) / "leak",
+                    retriever_model=leaked_ret,
+                    training_task_id="t",
+                    dataset_identifier="d",
+                    semantic_version="1.0.0",
+                )
+
+    def test_register_download_and_inference_equivalence(self):
+        """End-to-end mocked ClearML registration, download, deserialization, and exact query equivalence."""
+        orig_top_k = self.retriever.retrieve_for_request(self.sample_request, top_k=5, diversify=True)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cloud_storage = tmp_path / "mock_clearml_ret"
+            mock_task = MagicMock()
+            mock_task.id = "task_ret_123"
+            mock_task.output_uri = "https://files.clear.ml"
+
+            registered_models: list[SimpleNamespace] = []
+
+            def fake_update_weights(weights_filename, **kwargs):
+                import shutil
+                shutil.copytree(weights_filename, cloud_storage)
+                return "https://files.clear.ml/poster_layout_retriever-v2.1.0.zip"
+
+            mock_output = MagicMock()
+            mock_output.id = "clearml_ret_001"
+            mock_output.update_weights.side_effect = fake_update_weights
+            mock_output.set_all_metadata.return_value = True
+
+            def fake_output_ctor(**kwargs):
+                manifest = kwargs["config_dict"]["manifest"]
+                registered_models.append(
+                    SimpleNamespace(
+                        id="clearml_ret_001",
+                        name=kwargs["name"],
+                        tags=kwargs["tags"],
+                        published=False,
+                        task=mock_task.id,
+                        url="https://files.clear.ml/poster_layout_retriever-v2.1.0.zip",
+                        _meta={
+                            "model_family": manifest["model_family"],
+                            "semantic_version": manifest["semantic_version"],
+                            "lifecycle_status": manifest["lifecycle_status"],
+                            "dataset_identifier": manifest["dataset_identifier"],
+                            "git_commit": manifest["git_commit"],
+                            "checkpoint_sha256": manifest["checkpoint_sha256"],
+                        },
+                    )
+                )
+                return mock_output
+
+            def fake_input_ctor(model_id):
+                inst = MagicMock()
+                inst.id = model_id
+                inst.url = "https://files.clear.ml/poster_layout_retriever-v2.1.0.zip"
+                inst.get_local_copy.return_value = str(cloud_storage)
+                return inst
+
+            with (
+                patch("src.registry.clearml_registry.Task.get_task", return_value=mock_task),
+                patch("src.registry.clearml_registry.Model.query_models", side_effect=lambda **kw: [
+                    m for m in registered_models if kw.get("model_name") is None or m.name == kw.get("model_name")
+                ]),
+                patch("src.registry.clearml_registry.OutputModel", side_effect=fake_output_ctor),
+                patch("src.registry.clearml_registry.InputModel", side_effect=fake_input_ctor),
+            ):
+                ret_id = register_retriever_model(
+                    retriever_model=self.retriever,
+                    training_task_id="task_ret_123",
+                    semantic_version="2.1.0",
+                    validation_metrics={"orientation_match_at_k": 1.0},
+                    lifecycle_status="candidate",
+                )
+                self.assertEqual(ret_id, "clearml_ret_001")
+
+                # Duplicate version must be rejected
+                with self.assertRaises(ValueError):
+                    register_retriever_model(
+                        retriever_model=self.retriever,
+                        training_task_id="task_ret_123",
+                        semantic_version="2.1.0",
+                    )
+
+                loaded_ret, manifest = load_registered_retriever(
+                    semantic_version="2.1.0",
+                    return_manifest=True,
+                )
+                self.assertEqual(loaded_ret.clearml_model_id, "clearml_ret_001")
+                self.assertEqual(loaded_ret.clearml_model_version, "2.1.0")
+                self.assertEqual(manifest["model_config"]["architecture"], "LayoutRetriever")
+
+                loaded_top_k = loaded_ret.retrieve_for_request(self.sample_request, top_k=5, diversify=True)
+                pd.testing.assert_frame_equal(orig_top_k, loaded_top_k)
+
+                # Test neural generator checkpoint/manifest captures retriever provenance
+                tcfg = TrainingConfig(
+                    retriever_model_id=loaded_ret.clearml_model_id,
+                    retriever_version=loaded_ret.clearml_model_version,
+                )
+                model = TemplateConditionedLayoutModel()
+                ckpt_data = {
+                    "epoch": 0,
+                    "model_state_dict": model.state_dict(),
+                    "config": tcfg,
+                    "retriever_info": {
+                        "model_name": "poster_layout_retriever",
+                        "model_id": loaded_ret.clearml_model_id,
+                        "version": loaded_ret.clearml_model_version,
+                    },
+                }
+                extracted_tcfg = extract_training_config_from_checkpoint(ckpt_data)
+                self.assertEqual(extracted_tcfg["retriever_model_id"], "clearml_ret_001")
+                self.assertEqual(extracted_tcfg["retriever_version"], "2.1.0")
+
+                gen_manifest = build_model_bundle(
+                    bundle_dir=tmp_path / "gen_bundle",
+                    checkpoint_data=ckpt_data,
+                    model_config={"architecture": "TemplateConditionedLayoutModel", "d_model": 128},
+                    training_config=extracted_tcfg,
+                    training_task_id="task_gen_1",
+                    dataset_identifier="SciPostLayout v2 (70/15/15)",
+                    semantic_version="0.2.0",
+                    validation_metrics={"val_iou_mean": 0.4},
+                )
+                self.assertEqual(gen_manifest["retriever"]["model_id"], "clearml_ret_001")
+                self.assertEqual(gen_manifest["retriever"]["version"], "2.1.0")
+
+    def test_retriever_failure_and_legacy_migration(self):
+        """Verify failure on missing/incompatible artifacts and legacy pipeline.joblib compatibility."""
+        # Implicit loading without ID or version must fail
+        with self.assertRaises(ValueError):
+            load_registered_retriever()
+
+        with patch("src.registry.clearml_registry.Model.query_models", return_value=[]):
+            with self.assertRaises(LookupError):
+                load_registered_retriever(semantic_version="9.9.9")
+
+        # Incompatible architecture (e.g. neural generator bundle passed to load_registered_retriever)
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_bundle = Path(tmp) / "wrong_arch"
+            bad_bundle.mkdir()
+            (bad_bundle / "model_config.json").write_text(
+                json.dumps({"architecture": "TemplateConditionedLayoutModel"}), encoding="utf-8"
+            )
+            (bad_bundle / "manifest.json").write_text(
+                json.dumps({"bundle_sha256s": {"model_config.json": compute_sha256(bad_bundle / "model_config.json")}}),
+                encoding="utf-8",
+            )
+            fake_input = MagicMock()
+            fake_input.get_local_copy.return_value = str(bad_bundle)
+            with (
+                patch("src.registry.clearml_registry.InputModel", return_value=fake_input),
+                self.assertRaises(ValueError),
+            ):
+                load_registered_retriever(model_id="bad_arch_id")
+
+            # Missing retriever.joblib inside a LayoutRetriever bundle -> FileNotFoundError
+            missing_dir = Path(tmp) / "missing_joblib"
+            missing_dir.mkdir()
+            (missing_dir / "model_config.json").write_text(
+                json.dumps({"architecture": "LayoutRetriever", "artifact_filename": "retriever.joblib"}),
+                encoding="utf-8",
+            )
+            (missing_dir / "manifest.json").write_text(
+                json.dumps({"bundle_sha256s": {"model_config.json": compute_sha256(missing_dir / "model_config.json")}}),
+                encoding="utf-8",
+            )
+            fake_input_missing = MagicMock()
+            fake_input_missing.get_local_copy.return_value = str(missing_dir)
+            with (
+                patch("src.registry.clearml_registry.InputModel", return_value=fake_input_missing),
+                self.assertRaises(FileNotFoundError),
+            ):
+                load_registered_retriever(model_id="missing_joblib_id")
+
+            # Legacy local pipeline.joblib migration helper
+            legacy_dir = Path(tmp) / "legacy_v2"
+            legacy_dir.mkdir()
+            joblib.dump({"model": self.retriever, "preprocessor": None, "feature_columns": []}, legacy_dir / "pipeline.joblib")
+            (legacy_dir / "manifest.json").write_text(
+                json.dumps({"version": "v2.0.0", "metrics": {"orientation_match_at_k": 1.0}}),
+                encoding="utf-8",
+            )
+
+            mock_task = MagicMock()
+            mock_task.id = "mig_task"
+            mock_task.output_uri = "https://files.clear.ml"
+            mock_out = MagicMock()
+            mock_out.id = "migrated_ret_id"
+            mock_out.update_weights.return_value = "https://files.clear.ml/migrated.zip"
+            mock_out.set_all_metadata.return_value = True
+            mock_in = MagicMock()
+            mock_in.url = "https://files.clear.ml/migrated.zip"
+
+            with (
+                patch("src.registry.clearml_registry.Task.get_task", return_value=mock_task),
+                patch("src.registry.clearml_registry.Model.query_models", return_value=[]),
+                patch("src.registry.clearml_registry.OutputModel", return_value=mock_out),
+                patch("src.registry.clearml_registry.InputModel", return_value=mock_in),
+            ):
+                mig_id = migrate_local_retriever_to_clearml(legacy_dir, training_task_id="mig_task")
+                self.assertEqual(mig_id, "migrated_ret_id")
 
 
 if __name__ == "__main__":

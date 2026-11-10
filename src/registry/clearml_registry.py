@@ -19,11 +19,22 @@ from pathlib import Path
 from typing import Any
 
 import clearml
+import joblib
 import numpy as np
+import pandas as pd
+import sklearn
 import torch
 from clearml import InputModel, Model, OutputModel, Task
 from clearml.backend_api.session.client import APIClient
 
+from src.models.layout_retrieval import (
+    POSTER_COMPOSITION_COLS,
+    SHARED_CANVAS_COLS,
+    SHARED_CAPACITY_COLS,
+    SHARED_INVENTORY_COLS,
+    SHARED_STRUCTURE_COLS,
+    LayoutRetriever,
+)
 from src.neural_layout.dataset import (
     CONTENT_FEAT_DIM,
     KNOWN_CATEGORIES,
@@ -34,9 +45,11 @@ from src.neural_layout.layout_model import TemplateConditionedLayoutModel
 
 DEFAULT_PROJECT_NAME = "Infographix"
 DEFAULT_MODEL_FAMILY = "poster_layout_generator"
+RETRIEVER_MODEL_FAMILY = "poster_layout_retriever"
 LIFECYCLE_STAGES = ("candidate", "staging", "production", "archived")
 SEMVER_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 FEATURE_SCHEMA_VERSION = "v1.0.0"
+RETRIEVER_SCHEMA_VERSION = "v2.0.0"
 
 
 def normalize_version(version: str) -> str:
@@ -206,6 +219,7 @@ def extract_training_config_from_checkpoint(checkpoint_data: dict[str, Any]) -> 
         if loss_w is not None
         else {}
     )
+    rinfo = checkpoint_data.get("retriever_info") or {}
     return {
         "seed": int(getattr(cfg, "seed", 42)),
         "batch_size": int(getattr(cfg, "batch_size", 8)),
@@ -218,6 +232,11 @@ def extract_training_config_from_checkpoint(checkpoint_data: dict[str, Any]) -> 
         "loss_weights": loss_weights_dict,
         "execution_env": str(getattr(cfg, "execution_env", "unknown")),
         "checkpoint_epoch": int(checkpoint_data.get("epoch", -1)),
+        "retriever_model_name": str(
+            rinfo.get("model_name") or getattr(cfg, "retriever_model_name", RETRIEVER_MODEL_FAMILY)
+        ),
+        "retriever_model_id": rinfo.get("model_id") or getattr(cfg, "retriever_model_id", None),
+        "retriever_version": rinfo.get("version") or getattr(cfg, "retriever_version", None),
     }
 
 
@@ -348,6 +367,12 @@ def build_model_bundle(
         "environment.json": compute_sha256(env_path),
     }
 
+    retriever_provenance = {
+        "model_name": training_config.get("retriever_model_name", RETRIEVER_MODEL_FAMILY),
+        "model_id": training_config.get("retriever_model_id"),
+        "version": training_config.get("retriever_version"),
+    }
+
     # 7. Construct manifest.json
     manifest = {
         "project_name": "infographix",
@@ -362,6 +387,7 @@ def build_model_bundle(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "lifecycle_status": lifecycle_status,
         "parent_model_id": parent_model_id,
+        "retriever": retriever_provenance,
         "model_config": model_config,
         "training_config": training_config,
         "environment": env_info,
@@ -558,6 +584,11 @@ def register_model(
         }
         if parent_model_id:
             metadata_payload["parent_model_id"] = {"value": parent_model_id, "type": "str"}
+        ret_meta = manifest.get("retriever", {})
+        if ret_meta.get("model_id"):
+            metadata_payload["retriever_model_id"] = {"value": str(ret_meta["model_id"]), "type": "str"}
+        if ret_meta.get("version"):
+            metadata_payload["retriever_version"] = {"value": str(ret_meta["version"]), "type": "str"}
 
         for metric_name, metric_val in manifest["metrics"].items():
             if isinstance(metric_val, (int, float)):
@@ -783,3 +814,411 @@ def load_registered_model(
     if return_manifest:
         return model, manifest
     return model
+
+
+
+# ---------------------------------------------------------------------------
+# LayoutRetriever ClearML Native Model Registry Integration
+# ---------------------------------------------------------------------------
+
+def compute_train_poster_ids_sha256(train_posters_df: pd.DataFrame) -> str:
+    """Compute a deterministic SHA-256 fingerprint of the fitted training poster IDs."""
+    if "poster_id" not in train_posters_df.columns or len(train_posters_df) == 0:
+        return hashlib.sha256(b"").hexdigest()
+    sorted_ids = sorted(int(pid) for pid in train_posters_df["poster_id"].tolist())
+    payload = ",".join(str(pid) for pid in sorted_ids).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _validate_fitted_retriever(retriever: Any, enforce_train_only: bool = True) -> LayoutRetriever:
+    """Validate that an object is a completely fitted LayoutRetriever trained without dev/test leakage."""
+    if not isinstance(retriever, LayoutRetriever):
+        raise TypeError(f"Expected LayoutRetriever instance, got {type(retriever).__name__}.")
+
+    if (
+        retriever.train_posters_ is None
+        or not retriever.scalers_
+        or not retriever.train_group_matrices_
+        or retriever.train_occ_grids_ is None
+    ):
+        raise ValueError("LayoutRetriever is not fitted; cannot serialize or serve an unfitted retriever.")
+
+    if enforce_train_only and "split" in retriever.train_posters_.columns:
+        splits_present = set(retriever.train_posters_["split"].astype(str).unique())
+        non_train = splits_present - {"train"}
+        if non_train:
+            raise ValueError(
+                f"Anti-leakage violation: retriever contains non-train posters from splits {sorted(non_train)}."
+            )
+
+    return retriever
+
+
+def get_retriever_feature_schema() -> dict[str, Any]:
+    """Return canonical feature schema metadata for LayoutRetriever."""
+    return {
+        "schema_version": RETRIEVER_SCHEMA_VERSION,
+        "feature_groups": {
+            "canvas": list(SHARED_CANVAS_COLS),
+            "inventory": list(SHARED_INVENTORY_COLS),
+            "capacity": list(SHARED_CAPACITY_COLS),
+            "structure": list(SHARED_STRUCTURE_COLS),
+            "full_composition": list(POSTER_COMPOSITION_COLS),
+        },
+        "occupancy_grid_cols": [f"occ_grid_r{r}_c{c}" for r in range(4) for c in range(4)],
+    }
+
+
+def get_retriever_preprocessing_config(retriever: LayoutRetriever) -> dict[str, Any]:
+    """Return preprocessing and fitting metadata for a fitted LayoutRetriever."""
+    _validate_fitted_retriever(retriever, enforce_train_only=False)
+    assert retriever.train_posters_ is not None
+    return {
+        "imputer_strategy": "median",
+        "scaler": "RobustScaler",
+        "sqrt_dim_normalization": True,
+        "valid_poster_filter": "known_element_count > 0",
+        "group_weights": {k: float(v) for k, v in retriever.group_weights.items()},
+        "mmr_lambda": float(retriever.mmr_lambda),
+        "strict_orientation": bool(retriever.strict_orientation),
+        "n_train_posters": int(len(retriever.train_posters_)),
+        "train_poster_ids_sha256": compute_train_poster_ids_sha256(retriever.train_posters_),
+    }
+
+
+def build_retriever_bundle(
+    bundle_dir: Path,
+    retriever_model: LayoutRetriever,
+    training_task_id: str,
+    dataset_identifier: str,
+    semantic_version: str,
+    validation_metrics: dict[str, Any] | None = None,
+    lifecycle_status: str = "candidate",
+    model_family: str = RETRIEVER_MODEL_FAMILY,
+    parent_model_id: str | None = None,
+    git_commit: str | None = None,
+) -> dict[str, Any]:
+    """Construct an immutable, SHA-256 verified artifact bundle for LayoutRetriever."""
+    _validate_fitted_retriever(retriever_model, enforce_train_only=True)
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    ver = normalize_version(semantic_version)
+    full_name = build_model_name(model_family, ver)
+
+    # 1. Serialize full fitted estimator state using joblib
+    weights_path = bundle_dir / "retriever.joblib"
+    joblib.dump(retriever_model, weights_path, compress=3)
+
+    # 2. Save model configuration
+    prep_cfg = get_retriever_preprocessing_config(retriever_model)
+    model_cfg = {
+        "architecture": "LayoutRetriever",
+        "serialization_format": "joblib",
+        "artifact_filename": "retriever.joblib",
+        "group_weights": prep_cfg["group_weights"],
+        "mmr_lambda": prep_cfg["mmr_lambda"],
+        "strict_orientation": prep_cfg["strict_orientation"],
+        "n_train_posters": prep_cfg["n_train_posters"],
+        "train_poster_ids_sha256": prep_cfg["train_poster_ids_sha256"],
+    }
+    model_cfg_path = bundle_dir / "model_config.json"
+    model_cfg_path.write_text(json.dumps(model_cfg, indent=2), encoding="utf-8")
+
+    # 3. Save feature schema
+    feature_schema = get_retriever_feature_schema()
+    schema_path = bundle_dir / "feature_schema.json"
+    schema_path.write_text(json.dumps(feature_schema, indent=2), encoding="utf-8")
+
+    # 4. Save preprocessing config
+    prep_path = bundle_dir / "preprocessing_config.json"
+    prep_path.write_text(json.dumps(prep_cfg, indent=2), encoding="utf-8")
+
+    # 5. Save environment metadata
+    env_info = get_environment_info()
+    env_info["sklearn_version"] = sklearn.__version__
+    env_info["pandas_version"] = pd.__version__
+    env_info["joblib_version"] = joblib.__version__
+    if git_commit:
+        env_info["git_commit"] = git_commit
+    env_path = bundle_dir / "environment.json"
+    env_path.write_text(json.dumps(env_info, indent=2), encoding="utf-8")
+
+    # 6. Compute SHA-256 checksums
+    bundle_sha256s = {
+        "retriever.joblib": compute_sha256(weights_path),
+        "model_config.json": compute_sha256(model_cfg_path),
+        "feature_schema.json": compute_sha256(schema_path),
+        "preprocessing_config.json": compute_sha256(prep_path),
+        "environment.json": compute_sha256(env_path),
+    }
+
+    manifest = {
+        "project_name": "infographix",
+        "model_family": model_family,
+        "semantic_version": ver,
+        "full_model_name": full_name,
+        "clearml_training_task_id": training_task_id,
+        "dataset_identifier": dataset_identifier,
+        "git_commit": env_info["git_commit"],
+        "checkpoint_sha256": bundle_sha256s["retriever.joblib"],
+        "bundle_sha256s": bundle_sha256s,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "lifecycle_status": lifecycle_status,
+        "parent_model_id": parent_model_id,
+        "model_config": model_cfg,
+        "preprocessing_config": prep_cfg,
+        "environment": env_info,
+        "metrics": {
+            k: float(v) if isinstance(v, (int, float, np.floating, np.integer)) else v
+            for k, v in (validation_metrics or {}).items()
+        },
+    }
+    manifest_path = bundle_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return manifest
+
+
+def register_retriever_model(
+    retriever_model: LayoutRetriever,
+    training_task_id: str,
+    semantic_version: str,
+    dataset_identifier: str = "SciPostLayout v2 (70/15/15)",
+    validation_metrics: dict[str, Any] | None = None,
+    lifecycle_status: str = "candidate",
+    parent_model_id: str | None = None,
+    project_name: str = DEFAULT_PROJECT_NAME,
+    model_family: str = RETRIEVER_MODEL_FAMILY,
+    comment: str = "",
+) -> str:
+    """Register a fitted LayoutRetriever bundle in ClearML's native Model Registry."""
+    if lifecycle_status not in LIFECYCLE_STAGES:
+        raise ValueError(f"Invalid lifecycle_status '{lifecycle_status}'. Must be one of {LIFECYCLE_STAGES}")
+
+    _validate_fitted_retriever(retriever_model, enforce_train_only=True)
+    ver = normalize_version(semantic_version)
+    full_model_name = build_model_name(model_family, ver)
+
+    existing = Model.query_models(
+        project_name=project_name,
+        model_name=full_model_name,
+        include_archived=True,
+    )
+    exact_matches = [m for m in existing if m.name == full_model_name]
+    if exact_matches:
+        raise ValueError(
+            f"Model '{full_model_name}' already exists in ClearML project '{project_name}' "
+            f"(ID: {exact_matches[0].id}). Registered model versions are immutable."
+        )
+
+    orig_task = Task.get_task(task_id=training_task_id)
+    if orig_task is None:
+        raise ValueError(f"Originating ClearML task '{training_task_id}' not found.")
+
+    git_commit = get_git_commit()
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        bundle_dir = Path(tmp_dir) / full_model_name
+        manifest = build_retriever_bundle(
+            bundle_dir=bundle_dir,
+            retriever_model=retriever_model,
+            training_task_id=training_task_id,
+            dataset_identifier=dataset_identifier,
+            semantic_version=ver,
+            validation_metrics=validation_metrics,
+            lifecycle_status=lifecycle_status,
+            model_family=model_family,
+            parent_model_id=parent_model_id,
+            git_commit=git_commit,
+        )
+
+        tags = [
+            f"family:{model_family}",
+            f"version:v{ver}",
+            "arch:LayoutRetriever",
+            f"dataset:{dataset_identifier}",
+            f"stage:{lifecycle_status}",
+        ]
+        full_comment = (
+            f"Infographix {full_model_name} | Stage: {lifecycle_status} | "
+            f"Task: {training_task_id} | Dataset: {dataset_identifier}"
+        )
+        if comment:
+            full_comment = f"{full_comment}\n{comment}"
+
+        output_model = OutputModel(
+            task=orig_task,
+            config_dict={
+                "model_config": manifest["model_config"],
+                "feature_schema": get_retriever_feature_schema(),
+                "preprocessing_config": manifest["preprocessing_config"],
+                "manifest": manifest,
+            },
+            name=full_model_name,
+            tags=tags,
+            comment=full_comment,
+            framework="ScikitLearn",
+            base_model_id=None,
+        )
+
+        upload_uri = _resolve_upload_uri(orig_task)
+        uploaded_uri = output_model.update_weights(
+            weights_filename=str(bundle_dir),
+            upload_uri=upload_uri,
+            target_filename=f"{full_model_name}.zip",
+            auto_delete_file=False,
+            async_enable=False,
+            is_package=True,
+        )
+        output_model.wait_for_uploads()
+
+        if not uploaded_uri or str(uploaded_uri).startswith("file://") or "failed_uploading" in str(uploaded_uri):
+            raise RuntimeError(f"Retriever artifact upload failed or remained local: {uploaded_uri}")
+
+        metadata_payload: dict[str, dict[str, str]] = {
+            "model_family": {"value": model_family, "type": "str"},
+            "semantic_version": {"value": ver, "type": "str"},
+            "architecture": {"value": "LayoutRetriever", "type": "str"},
+            "dataset_identifier": {"value": dataset_identifier, "type": "str"},
+            "lifecycle_status": {"value": lifecycle_status, "type": "str"},
+            "training_task_id": {"value": training_task_id, "type": "str"},
+            "git_commit": {"value": str(git_commit), "type": "str"},
+            "checkpoint_sha256": {"value": manifest["checkpoint_sha256"], "type": "str"},
+            "n_train_posters": {"value": str(manifest["model_config"]["n_train_posters"]), "type": "int"},
+            "train_poster_ids_sha256": {"value": manifest["model_config"]["train_poster_ids_sha256"], "type": "str"},
+            "schema_version": {"value": RETRIEVER_SCHEMA_VERSION, "type": "str"},
+        }
+        if parent_model_id:
+            metadata_payload["parent_model_id"] = {"value": parent_model_id, "type": "str"}
+
+        for metric_name, metric_val in manifest["metrics"].items():
+            if isinstance(metric_val, (int, float)):
+                metadata_payload[f"metric.{metric_name}"] = {
+                    "value": f"{metric_val:.6f}",
+                    "type": "float",
+                }
+
+        ok = output_model.set_all_metadata(metadata_payload, replace=True)
+        if not ok:
+            raise RuntimeError(f"Failed to persist metadata on ClearML retriever '{output_model.id}'.")
+
+        if parent_model_id:
+            client = APIClient()
+            client.models.edit(model=output_model.id, parent=parent_model_id)
+
+        verified_model = InputModel(model_id=output_model.id)
+        if not verified_model.url or "failed" in verified_model.url:
+            raise RuntimeError(f"Retriever verification failed after registration: {verified_model.url}")
+
+        return str(output_model.id)
+
+
+def load_registered_retriever(
+    model_id: str | None = None,
+    semantic_version: str | None = None,
+    project_name: str = DEFAULT_PROJECT_NAME,
+    model_family: str = RETRIEVER_MODEL_FAMILY,
+    force_download: bool = False,
+    return_manifest: bool = False,
+) -> LayoutRetriever | tuple[LayoutRetriever, dict[str, Any]]:
+    """Deterministically load a SHA-256 verified LayoutRetriever from ClearML Model Registry.
+
+    Requires an explicit `model_id` or `semantic_version`; refuses implicit latest/production
+    resolution and refuses silent fallback to local `models/registry/`.
+    """
+    resolved_id = _resolve_exact_model_id(
+        model_id=model_id,
+        semantic_version=semantic_version,
+        project_name=project_name,
+        model_family=model_family,
+    )
+
+    input_model = InputModel(model_id=resolved_id)
+    local_bundle = input_model.get_local_copy(
+        extract_archive=True,
+        raise_on_error=True,
+        force_download=force_download,
+    )
+    if not local_bundle:
+        raise RuntimeError(f"ClearML failed to download artifact bundle for retriever '{resolved_id}'.")
+
+    bundle_dir = Path(local_bundle)
+    if not bundle_dir.is_dir():
+        raise RuntimeError(
+            f"Expected extracted bundle directory for retriever '{resolved_id}', got file: {bundle_dir}"
+        )
+
+    manifest = verify_bundle_checksums(bundle_dir)
+
+    cfg_path = bundle_dir / "model_config.json"
+    if not cfg_path.exists():
+        raise FileNotFoundError(f"Missing model_config.json in downloaded bundle {bundle_dir}")
+    model_cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+
+    arch = model_cfg.get("architecture")
+    if arch != "LayoutRetriever":
+        raise ValueError(
+            f"Incompatible model architecture '{arch}' in bundle; expected 'LayoutRetriever'."
+        )
+
+    schema_path = bundle_dir / "feature_schema.json"
+    feature_schema = json.loads(schema_path.read_text(encoding="utf-8")) if schema_path.exists() else {}
+
+    artifact_name = str(model_cfg.get("artifact_filename", "retriever.joblib"))
+    joblib_path = bundle_dir / artifact_name
+    if not joblib_path.exists():
+        # Legacy bundle compatibility inside an extracted ClearML package
+        legacy_joblib = bundle_dir / "pipeline.joblib"
+        if legacy_joblib.exists():
+            joblib_path = legacy_joblib
+        else:
+            raise FileNotFoundError(
+                f"Corrupted retriever bundle: missing '{artifact_name}' in {bundle_dir}"
+            )
+
+    loaded_obj = joblib.load(joblib_path)
+    if isinstance(loaded_obj, dict) and "model" in loaded_obj:
+        loaded_obj = loaded_obj["model"]
+
+    retriever = _validate_fitted_retriever(loaded_obj, enforce_train_only=True)
+    retriever.clearml_model_id = resolved_id
+    retriever.clearml_model_version = str(manifest.get("semantic_version", "unknown"))
+    retriever.registry_manifest = manifest
+    retriever.feature_schema = feature_schema
+
+    if return_manifest:
+        return retriever, manifest
+    return retriever
+
+
+def migrate_local_retriever_to_clearml(
+    legacy_version_dir: str | Path,
+    training_task_id: str,
+    semantic_version: str | None = None,
+    dataset_identifier: str = "SciPostLayout v2",
+    lifecycle_status: str = "staging",
+    project_name: str = DEFAULT_PROJECT_NAME,
+    comment: str = "Migrated from local ModelRegistry artifact.",
+) -> str:
+    """One-time migration helper to upload a legacy local retriever bundle to ClearML."""
+    vdir = Path(legacy_version_dir)
+    pipeline_path = vdir / "pipeline.joblib"
+    manifest_path = vdir / "manifest.json"
+    if not pipeline_path.exists():
+        raise FileNotFoundError(f"Legacy retriever bundle not found: {pipeline_path}")
+
+    legacy_manifest = (
+        json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+    )
+    payload = joblib.load(pipeline_path)
+    retriever = payload["model"] if isinstance(payload, dict) and "model" in payload else payload
+    ver = semantic_version or str(legacy_manifest.get("version", "2.0.0"))
+
+    return register_retriever_model(
+        retriever_model=retriever,
+        training_task_id=training_task_id,
+        semantic_version=ver,
+        dataset_identifier=dataset_identifier,
+        validation_metrics=legacy_manifest.get("metrics", {}),
+        lifecycle_status=lifecycle_status,
+        project_name=project_name,
+        comment=comment,
+    )
