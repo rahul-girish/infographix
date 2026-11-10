@@ -204,6 +204,7 @@ class TestStageBNeuralLayout(unittest.TestCase):
         expected_keys = [
             "loss_total",
             "loss_box",
+            "loss_size",
             "loss_giou",
             "loss_bound",
             "loss_overlap",
@@ -251,40 +252,28 @@ class TestStageBNeuralLayout(unittest.TestCase):
         self.assertGreater(loss_dict_overflow["loss_bound"], 0.3)
 
     def test_legitimate_figure_caption_overlap_suppression(self):
-        """Verify that intentional figure-caption overlaps are suppressed in the overlap penalty."""
+        """Verify overlap penalty only exempts explicit ground-truth exempt pairs, not all fig-caption pairs."""
         loss_fn = MultiTaskLayoutLoss()
         fig_cat = CATEGORY_TO_IDX["figure"]
         cap_cat = CATEGORY_TO_IDX["caption"]
-        text_cat = CATEGORY_TO_IDX["text"]
 
-        # 2 overlapping boxes (50% overlapping)
         box_pair = torch.tensor([[[0.2, 0.2, 0.4, 0.4], [0.3, 0.3, 0.4, 0.4]]])
-
-        # Case A: text + text overlap (disparate unintended collision)
-        feats_text = torch.zeros(1, 2, 18)
-        feats_text[0, 0, text_cat] = 1.0
-        feats_text[0, 1, text_cat] = 1.0
-
-        # Case B: figure + caption overlap (legitimate containment/nesting)
         feats_figcap = torch.zeros(1, 2, 18)
         feats_figcap[0, 0, fig_cat] = 1.0
         feats_figcap[0, 1, cap_cat] = 1.0
 
-        batch_text = {
-            "target_boxes": box_pair,
-            "target_columns": torch.zeros(1, 2, dtype=torch.long),
-            "target_orders": torch.zeros(1, 2, dtype=torch.long),
-            "macro_targets": torch.zeros(1, dtype=torch.long),
-            "content_mask": torch.tensor([[True, True]]),
-            "content_feats": feats_text,
-        }
-        batch_figcap = {
+        batch_unexempt = {
             "target_boxes": box_pair,
             "target_columns": torch.zeros(1, 2, dtype=torch.long),
             "target_orders": torch.zeros(1, 2, dtype=torch.long),
             "macro_targets": torch.zeros(1, dtype=torch.long),
             "content_mask": torch.tensor([[True, True]]),
             "content_feats": feats_figcap,
+        }
+        exempt_mask = torch.tensor([[[False, True], [True, False]]])
+        batch_exempt = {
+            **batch_unexempt,
+            "target_overlap_exempt_mask": exempt_mask,
         }
         preds = {
             "pred_boxes": box_pair,
@@ -293,11 +282,50 @@ class TestStageBNeuralLayout(unittest.TestCase):
             "pred_macro_column_logits": torch.zeros(1, 5),
         }
 
-        _, loss_dict_text = loss_fn(preds, batch_text)
-        _, loss_dict_figcap = loss_fn(preds, batch_figcap)
+        _, loss_dict_unexempt = loss_fn(preds, batch_unexempt)
+        _, loss_dict_exempt = loss_fn(preds, batch_exempt)
 
-        # The overlap penalty for text+text must be significantly higher than for figure+caption
-        self.assertGreater(loss_dict_text["loss_overlap"], loss_dict_figcap["loss_overlap"] * 5.0)
+        # Unexempted figure+caption collision must receive full overlap penalty
+        self.assertGreater(loss_dict_unexempt["loss_overlap"], loss_dict_exempt["loss_overlap"] * 5.0)
+
+    def test_bounded_anchor_model_canvas_bounds_and_equivariance(self):
+        """Verify bounded anchor model guarantees in-canvas boxes, template sensitivity, and equivariance."""
+        model = TemplateConditionedLayoutModel(
+            content_dim=18,
+            template_dim=16,
+            d_model=64,
+            num_heads=4,
+            encoder_layers=2,
+            decoder_layers=2,
+            ffn_dim=128,
+            bbox_parameterization="bounded",
+            use_anchor_conditioning=True,
+        )
+        model.eval()
+        with torch.no_grad():
+            c = self.content_feats.clone()
+            c[:, :, 17] = 0.0  # remove sequence-index feature
+            out = model(c, self.template_feats, self.content_mask, self.template_mask)
+            boxes = out["pred_boxes"]
+            self.assertTrue((boxes[..., 0] >= 0.0).all())
+            self.assertTrue((boxes[..., 1] >= 0.0).all())
+            self.assertTrue((boxes[..., 0] + boxes[..., 2] <= 1.0 + 1e-6).all())
+            self.assertTrue((boxes[..., 1] + boxes[..., 3] <= 1.0 + 1e-6).all())
+
+            # Template sensitivity check
+            out_zero = model(c, torch.zeros_like(self.template_feats), self.content_mask, self.template_mask)
+            self.assertGreater((boxes - out_zero["pred_boxes"]).abs().max().item(), 0.05)
+
+            # Permutation equivariance check on valid elements of item 0
+            m0 = int(self.content_mask[0].sum().item())
+            perm = torch.randperm(m0)
+            c0 = c[0:1, :m0]
+            t0 = self.template_feats[0:1]
+            cm0 = torch.ones(1, m0, dtype=torch.bool)
+            tm0 = self.template_mask[0:1]
+            b_orig = model(c0, t0, cm0, tm0)["pred_boxes"][0]
+            b_perm = model(c0[:, perm], t0, cm0, tm0)["pred_boxes"][0]
+            self.assertTrue(torch.allclose(b_orig[perm], b_perm, atol=1e-5))
 
     def test_evaluator_metrics(self):
         """Verify LayoutEvaluator calculates all multi-task metrics."""

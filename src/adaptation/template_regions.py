@@ -32,7 +32,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from src.features.pipeline_v2 import EPS, HEADER_CAT_IDS, KNOWN_CATEGORY_SLUGS
+from src.features.config import EPS, HEADER_CAT_IDS, KNOWN_CATEGORY_SLUGS
 
 
 @dataclass

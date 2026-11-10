@@ -140,6 +140,10 @@ def get_environment_info() -> dict[str, str]:
 
 def extract_model_config_from_checkpoint(checkpoint_data: dict[str, Any]) -> dict[str, Any]:
     """Extract TemplateConditionedLayoutModel instantiation config from checkpoint."""
+    explicit_mcfg = checkpoint_data.get("model_config")
+    if isinstance(explicit_mcfg, dict) and "d_model" in explicit_mcfg:
+        return dict(explicit_mcfg)
+
     cfg = checkpoint_data.get("config")
     state_dict = checkpoint_data.get("model_state_dict", {})
 
@@ -147,6 +151,16 @@ def extract_model_config_from_checkpoint(checkpoint_data: dict[str, Any]) -> dic
     num_columns = 5
     if "decoder.column_head.3.weight" in state_dict:
         num_columns = int(state_dict["decoder.column_head.3.weight"].shape[0])
+
+    # State dict is authoritative for whether anchor weights exist
+    use_anchor = "decoder.slot_q.weight" in state_dict
+    bbox_param = str(
+        getattr(
+            cfg,
+            "bbox_parameterization",
+            "bounded" if use_anchor else "independent",
+        )
+    )
 
     if cfg is not None and hasattr(cfg, "d_model"):
         return {
@@ -160,6 +174,10 @@ def extract_model_config_from_checkpoint(checkpoint_data: dict[str, Any]) -> dic
             "ffn_dim": int(cfg.ffn_dim),
             "num_columns": num_columns,
             "dropout": float(cfg.dropout),
+            "bbox_parameterization": bbox_param,
+            "use_anchor_conditioning": use_anchor,
+            "min_box_width": float(getattr(cfg, "min_box_width", 0.01)),
+            "min_box_height": float(getattr(cfg, "min_box_height", 0.005)),
         }
 
     raise ValueError(
@@ -176,6 +194,7 @@ def extract_training_config_from_checkpoint(checkpoint_data: dict[str, Any]) -> 
     loss_weights_dict = (
         {
             "w_box": float(loss_w.w_box),
+            "w_size": float(getattr(loss_w, "w_size", 0.0)),
             "w_giou": float(loss_w.w_giou),
             "w_bound": float(loss_w.w_bound),
             "w_overlap": float(loss_w.w_overlap),
@@ -743,6 +762,10 @@ def load_registered_model(
         ffn_dim=int(model_cfg.get("ffn_dim", 256)),
         num_columns=int(model_cfg.get("num_columns", 5)),
         dropout=float(model_cfg.get("dropout", 0.1)),
+        bbox_parameterization=str(model_cfg.get("bbox_parameterization", "independent")),
+        use_anchor_conditioning=bool(model_cfg.get("use_anchor_conditioning", False)),
+        min_box_width=float(model_cfg.get("min_box_width", 0.01)),
+        min_box_height=float(model_cfg.get("min_box_height", 0.005)),
     )
 
     # 5. Load verified weights

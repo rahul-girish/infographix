@@ -24,7 +24,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from src.features.pipeline_v2 import EPS, KNOWN_CATEGORY_SLUGS
+from src.features.config import EPS, KNOWN_CATEGORY_SLUGS
 
 # Mapping from user visual types to SciPostLayout category slugs
 VISUAL_TYPE_TO_SCIPOST: dict[str, str] = {
