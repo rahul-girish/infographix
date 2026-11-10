@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import shutil
 import time
+import warnings
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -99,7 +100,17 @@ class ModelRegistry:
         git_commit: str | None = None,
         data_version_hash: str | None = None,
     ) -> ModelManifest:
-        """Register a new immutable model version with its artifacts and manifest."""
+        """[DEPRECATED for active neural models] Register a local legacy model version.
+
+        New model registration must use `src.registry.clearml_registry.register_model`
+        backed by ClearML's native Model Registry.
+        """
+        warnings.warn(
+            "Local ModelRegistry.register_model is deprecated for active development. "
+            "Use src.registry.clearml_registry.register_model instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if stage not in STAGES:
             raise ValueError(f"Invalid stage '{stage}'. Must be one of {STAGES}")
 

@@ -53,3 +53,5 @@ backend/data/**
 
 *.zst
 /.mydvc/credentials
+clearml.conf
+*.clearml.conf
