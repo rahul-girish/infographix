@@ -1,7 +1,7 @@
-import { projectsService } from "./projects";
+import { apiClient } from "./apiClient";
 
 export const submissionsService = {
   async submit(projectId: string): Promise<void> {
-    await projectsService.updateStatus(projectId, "submitted");
+    await apiClient.post(`/projects/${projectId}/submit`);
   },
 };

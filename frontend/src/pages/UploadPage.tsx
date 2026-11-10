@@ -22,9 +22,10 @@ export default function UploadPage() {
     if (validationError) { setError(validationError); return; }
     setError(""); setBusy(true); setFileName(file.name); setProgress(0);
     try {
-      await documentsService.upload(file, setProgress);
+      const uploadResult = await documentsService.upload(file, setProgress, projectId);
       await projectsService.attachDocument(projectId, file.name);
-      await projectsService.saveSections(projectId, await extractionService.extract(file.name));
+      const sections = uploadResult.sections || await extractionService.extract(file.name, projectId);
+      await projectsService.saveSections(projectId, sections);
     } catch (uploadError) {
       setFileName("");
       setError(uploadError instanceof Error ? uploadError.message : "Could not upload this document.");
