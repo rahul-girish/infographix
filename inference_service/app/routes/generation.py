@@ -27,7 +27,7 @@ def generate_layout(
     except ServiceNotReadyError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Inference service is not ready to serve requests.",
+            detail=str(exc) or "Inference service is not ready to serve requests.",
         ) from exc
     except InferenceExecutionError as exc:
         raise HTTPException(

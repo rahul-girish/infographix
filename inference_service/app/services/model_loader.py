@@ -5,9 +5,12 @@ import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
+import torch
 from clearml import Task
 
 from inference_service.app.config import Settings
+from inference_service.app.services.memory_profiler import trim_process_memory
+from src.features.config import KNOWN_CATEGORY_SLUGS
 from src.models.layout_retrieval import (
     SHARED_CANVAS_COLS,
     SHARED_CAPACITY_COLS,
@@ -24,6 +27,19 @@ from src.registry.clearml_registry import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Keys read by compute_request_candidate_compatibility() during retrieval reranking
+_COMPAT_DICT_KEYS = {
+    "log_aspect_ratio",
+    "orientation",
+    "known_element_count",
+    "visual_area_sum",
+    "textual_area_sum",
+    "visual_to_body_area_ratio",
+    "sum_box_area_fraction",
+    "estimated_column_count",
+    *(f"count_{slug}" for slug in KNOWN_CATEGORY_SLUGS),
+}
 
 
 @dataclass
@@ -116,7 +132,9 @@ def _verify_retriever_schema(retriever: LayoutRetriever, manifest: dict[str, Any
     model_cfg = manifest.get("model_config") or {}
     arch = model_cfg.get("architecture")
     if arch and arch != "LayoutRetriever":
-        raise ValueError(f"Retriever manifest architecture mismatch: got '{arch}', expected 'LayoutRetriever'.")
+        raise ValueError(
+            f"Retriever manifest architecture mismatch: got '{arch}', expected 'LayoutRetriever'."
+        )
 
     if retriever.train_posters_ is None:
         raise ValueError("Loaded retriever has no fitted train_posters_ dataframe.")
@@ -131,6 +149,15 @@ def _verify_retriever_schema(retriever: LayoutRetriever, manifest: dict[str, Any
     missing = [col for col in required_cols if col not in retriever.train_posters_.columns]
     if missing:
         raise ValueError(f"Retriever train_posters_ missing schema columns: {missing}")
+
+
+def _compact_retriever_memory(retriever: LayoutRetriever) -> None:
+    """Trim redundant ~275-key Python dicts on train_poster_dicts_ to only the 18 keys used at runtime."""
+    dicts = getattr(retriever, "train_poster_dicts_", None)
+    if isinstance(dicts, list) and dicts:
+        retriever.train_poster_dicts_ = [
+            {k: row[k] for k in _COMPAT_DICT_KEYS if k in row} for row in dicts
+        ]
 
 
 def _verify_neural_model_schema(model: TemplateConditionedLayoutModel, manifest: dict[str, Any]) -> None:
@@ -148,7 +175,7 @@ def _verify_neural_model_schema(model: TemplateConditionedLayoutModel, manifest:
 
 
 def load_clearml_retriever(settings: Settings) -> tuple[LayoutRetriever, LoadedModelMetadata]:
-    """Download, verify, and reconstruct the LayoutRetriever from ClearML Model Registry."""
+    """Download, verify, compact, and reconstruct the LayoutRetriever from ClearML Model Registry."""
     model_id, semantic_version = _resolve_model_selector(
         role="retriever",
         project_name=settings.CLEARML_PROJECT_NAME,
@@ -167,12 +194,18 @@ def load_clearml_retriever(settings: Settings) -> tuple[LayoutRetriever, LoadedM
         return_manifest=True,
     )
     _verify_retriever_schema(retriever, manifest)
+    _compact_retriever_memory(retriever)
+    trim_process_memory()
 
     resolved_id = str(getattr(retriever, "clearml_model_id", model_id or ""))
-    resolved_ver = str(manifest.get("semantic_version", getattr(retriever, "clearml_model_version", "unknown")))
+    resolved_ver = str(
+        manifest.get("semantic_version", getattr(retriever, "clearml_model_version", "unknown"))
+    )
     meta = LoadedModelMetadata(
         role="retriever",
-        model_name=str(manifest.get("full_model_name", f"{settings.RETRIEVER_MODEL_FAMILY}-v{resolved_ver}")),
+        model_name=str(
+            manifest.get("full_model_name", f"{settings.RETRIEVER_MODEL_FAMILY}-v{resolved_ver}")
+        ),
         model_family=str(manifest.get("model_family", settings.RETRIEVER_MODEL_FAMILY)),
         clearml_model_id=resolved_id,
         semantic_version=resolved_ver,
@@ -189,6 +222,12 @@ def load_clearml_neural_model(
     settings: Settings,
 ) -> tuple[TemplateConditionedLayoutModel, LoadedModelMetadata]:
     """Download, verify, and reconstruct TemplateConditionedLayoutModel from ClearML Model Registry."""
+    if str(settings.TORCH_DEVICE).startswith("cpu"):
+        try:
+            torch.set_num_threads(1)
+        except Exception:
+            pass
+
     model_id, semantic_version = _resolve_model_selector(
         role="neural_generator",
         project_name=settings.CLEARML_PROJECT_NAME,
@@ -208,12 +247,15 @@ def load_clearml_neural_model(
         return_manifest=True,
     )
     _verify_neural_model_schema(model, manifest)
+    trim_process_memory()
 
     resolved_id = str(getattr(model, "clearml_model_id", model_id or ""))
     resolved_ver = str(manifest.get("semantic_version", "unknown"))
     meta = LoadedModelMetadata(
         role="neural_generator",
-        model_name=str(manifest.get("full_model_name", f"{settings.NEURAL_MODEL_FAMILY}-v{resolved_ver}")),
+        model_name=str(
+            manifest.get("full_model_name", f"{settings.NEURAL_MODEL_FAMILY}-v{resolved_ver}")
+        ),
         model_family=str(manifest.get("model_family", settings.NEURAL_MODEL_FAMILY)),
         clearml_model_id=resolved_id,
         semantic_version=resolved_ver,

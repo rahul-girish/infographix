@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     MINIDVC_REFRESH_TOKEN: Optional[str] = None
 
     # Startup behavior
+    EAGER_LOAD_ADAPTATION_DATA: bool = False
     SKIP_STARTUP_INIT: bool = False
 
     CORS_ORIGINS: List[str] = ["*"]

@@ -12,7 +12,10 @@ from typing import Optional
 
 import boto3
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import requests
+from boto3.s3.transfer import TransferConfig
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import (
     BotoCoreError,
@@ -22,6 +25,10 @@ from botocore.exceptions import (
 )
 
 from inference_service.app.config import PROJECT_ROOT, Settings
+from inference_service.app.services.memory_profiler import (
+    MemoryTracker,
+    trim_process_memory,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +36,20 @@ REQUIRED_ELEMENTS_COLUMNS = [
     "poster_id",
     "element_id",
     "category_slug",
+    "x0",
+    "y0",
+    "w_norm",
+    "h_norm",
+    "cx",
+    "cy",
+    "area_norm",
+    "raw_x",
+    "raw_y",
+    "raw_w",
+    "raw_h",
+]
+
+FLOAT32_COLUMNS = [
     "x0",
     "y0",
     "w_norm",
@@ -52,6 +73,8 @@ class DataDependencyStatus:
     sha256: Optional[str] = None
     row_count: int = 0
     poster_count: int = 0
+    artifact_size_mib: Optional[float] = None
+    dataset_mem_mib: Optional[float] = None
     error: Optional[str] = None
 
 
@@ -86,7 +109,7 @@ def _atomic_promote_temp_file(
 
 
 def _download_from_s3(settings: Settings, dest_path: Path) -> str:
-    """Download elements.parquet from a private AWS S3 bucket, verify SHA-256, and atomically rename."""
+    """Stream elements.parquet from a private AWS S3 bucket to disk, verify SHA-256, and atomically rename."""
     bucket = (settings.S3_BUCKET_NAME or "").strip()
     key = (settings.S3_OBJECT_KEY or "").strip()
     if not bucket or not key:
@@ -107,6 +130,15 @@ def _download_from_s3(settings: Settings, dest_path: Path) -> str:
     os.close(tmp_fd)
     tmp_path = Path(tmp_name)
 
+    # Cap transfer concurrency and chunk size to avoid high RAM spikes in 512 MiB containers
+    transfer_cfg = TransferConfig(
+        multipart_threshold=8 * 1024 * 1024,
+        multipart_chunksize=4 * 1024 * 1024,
+        max_concurrency=2,
+        max_io_queue=4,
+        use_threads=True,
+    )
+
     try:
         client = boto3.client(
             "s3",
@@ -115,7 +147,7 @@ def _download_from_s3(settings: Settings, dest_path: Path) -> str:
             region_name=region,
             config=BotoConfig(connect_timeout=15, read_timeout=120, retries={"max_attempts": 2}),
         )
-        client.download_file(bucket, key, str(tmp_path))
+        client.download_file(bucket, key, str(tmp_path), Config=transfer_cfg)
         return _atomic_promote_temp_file(tmp_path, dest_path, settings.ELEMENTS_PARQUET_SHA256)
     except (NoCredentialsError, PartialCredentialsError) as exc:
         raise RuntimeError(
@@ -243,6 +275,47 @@ def _download_from_minidvc(settings: Settings, dest_path: Path) -> str:
             tmp_path.unlink(missing_ok=True)
 
 
+def _read_elements_parquet_streaming(
+    parquet_path: Path,
+    valid_poster_ids: Optional[set[int]] = None,
+) -> pd.DataFrame:
+    """Stream-load only required columns from Parquet in bounded batches with float32 downcasting."""
+    pa.set_cpu_count(1)
+    pa.set_io_thread_count(1)
+
+    pf = pq.ParquetFile(parquet_path, memory_map=True)
+    schema_names = set(pf.schema_arrow.names)
+    missing = [col for col in REQUIRED_ELEMENTS_COLUMNS if col not in schema_names]
+    if missing:
+        raise ValueError(f"elements.parquet missing required columns: {missing}")
+
+    chunks: list[pd.DataFrame] = []
+    for batch in pf.iter_batches(
+        batch_size=32768,
+        columns=REQUIRED_ELEMENTS_COLUMNS,
+        use_threads=False,
+    ):
+        pdf = batch.to_pandas()
+        del batch
+        if valid_poster_ids is not None and len(pdf) > 0:
+            pdf = pdf[pdf["poster_id"].isin(valid_poster_ids)]
+        if len(pdf) == 0:
+            continue
+        for col in FLOAT32_COLUMNS:
+            pdf[col] = pdf[col].astype("float32")
+        chunks.append(pdf)
+
+    del pf
+    if not chunks:
+        raise ValueError("elements.parquet is empty (0 rows).")
+
+    df = pd.concat(chunks, ignore_index=True)
+    del chunks
+    df["category_slug"] = df["category_slug"].astype("category")
+    trim_process_memory()
+    return df
+
+
 def _validate_elements_dataframe(df: pd.DataFrame) -> None:
     missing = [col for col in REQUIRED_ELEMENTS_COLUMNS if col not in df.columns]
     if missing:
@@ -251,7 +324,25 @@ def _validate_elements_dataframe(df: pd.DataFrame) -> None:
         raise ValueError("elements.parquet is empty (0 rows).")
 
 
-def load_elements_dataframe(settings: Settings) -> tuple[pd.DataFrame, DataDependencyStatus]:
+def has_configured_adaptation_source(settings: Settings) -> bool:
+    """Return True if local elements.parquet exists or a remote download source is configured."""
+    return bool(
+        Path(settings.ELEMENTS_PARQUET_PATH).exists()
+        or (settings.S3_BUCKET_NAME or "").strip()
+        or (settings.S3_OBJECT_KEY or "").strip()
+        or settings.ELEMENTS_PARQUET_URL
+        or settings.CLEARML_DATASET_ID
+        or settings.CLEARML_DATASET_NAME
+        or settings.MINIDVC_SNAPSHOT
+    )
+
+
+def load_elements_dataframe(
+    settings: Settings,
+    *,
+    valid_poster_ids: Optional[set[int]] = None,
+    memory_tracker: Optional[MemoryTracker] = None,
+) -> tuple[pd.DataFrame, DataDependencyStatus]:
     """Ensure `elements.parquet` is available, verified, and loaded into memory.
 
     Explicit source-selection precedence:
@@ -282,6 +373,10 @@ def load_elements_dataframe(settings: Settings) -> tuple[pd.DataFrame, DataDepen
         )
         actual_sha256 = _download_from_s3(settings, target_path)
         source = "s3"
+        trim_process_memory()
+        if memory_tracker is not None:
+            size_mib = round(target_path.stat().st_size / (1024.0 * 1024.0), 2)
+            memory_tracker.record("s3_dataset_downloaded", artifact_size_mib=size_mib)
     elif settings.ELEMENTS_PARQUET_URL:
         logger.info("Downloading elements.parquet from configured URL...")
         actual_sha256 = _download_from_url(
@@ -305,8 +400,17 @@ def load_elements_dataframe(settings: Settings) -> tuple[pd.DataFrame, DataDepen
             "ELEMENTS_PARQUET_URL, CLEARML_DATASET_ID/NAME, or MINIDVC_SNAPSHOT) is configured."
         )
 
-    df = pd.read_parquet(target_path, columns=REQUIRED_ELEMENTS_COLUMNS)
+    artifact_size_mib = round(target_path.stat().st_size / (1024.0 * 1024.0), 2)
+    df = _read_elements_parquet_streaming(target_path, valid_poster_ids=valid_poster_ids)
     _validate_elements_dataframe(df)
+    dataset_mem_mib = round(float(df.memory_usage(deep=True).sum()) / (1024.0 * 1024.0), 2)
+
+    if memory_tracker is not None:
+        memory_tracker.record(
+            "parquet_loaded",
+            artifact_size_mib=artifact_size_mib,
+            dataset_mem_mib=dataset_mem_mib,
+        )
 
     status = DataDependencyStatus(
         ready=True,
@@ -314,5 +418,7 @@ def load_elements_dataframe(settings: Settings) -> tuple[pd.DataFrame, DataDepen
         sha256=actual_sha256,
         row_count=int(len(df)),
         poster_count=int(df["poster_id"].nunique()),
+        artifact_size_mib=artifact_size_mib,
+        dataset_mem_mib=dataset_mem_mib,
     )
     return df, status

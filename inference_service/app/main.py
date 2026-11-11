@@ -15,6 +15,7 @@ from inference_service.app.routes.generation import router as generation_router
 from inference_service.app.routes.health import router as health_router
 from inference_service.app.routes.models import router as models_router
 from inference_service.app.services.inference_manager import InferenceManager
+from inference_service.app.services.memory_profiler import MemoryTracker
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -24,7 +25,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
 
-    manager = InferenceManager()
+    tracker = MemoryTracker()
+    tracker.record("process_startup")
+    manager = InferenceManager(memory_tracker=tracker)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

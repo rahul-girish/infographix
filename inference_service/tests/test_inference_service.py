@@ -366,14 +366,19 @@ class TestInferenceService(unittest.TestCase):
         with p1, p2, p3:
             app.state.inference_manager.initialize(cfg)
 
-        # Readiness succeeds after initialization
+        # Readiness succeeds after initialization (neural-only; adaptation is lazy!)
         status_code, ready_after = asyncio.run(_asgi_request(app, "GET", "/health/ready"))
         self.assertEqual(status_code, 200)
         self.assertEqual(ready_after["status"], "ready")
         self.assertTrue(ready_after["model_initialized"])
         self.assertTrue(ready_after["retriever_initialized"])
-        self.assertTrue(ready_after["data_dependency_ready"])
-        self.assertEqual(set(ready_after["supported_engines"]), {"adaptation", "neural"})
+        self.assertFalse(ready_after["data_dependency_ready"])
+        self.assertFalse(ready_after["adaptation_initialized"])
+        self.assertEqual(ready_after["supported_engines"], ["neural"])
+        self.assertEqual(
+            ready_after["engine_states"],
+            {"neural": "ready", "adaptation": "lazy_uninitialized"},
+        )
 
         # 3. /v1/models reports actual loaded ClearML IDs and versions
         status_code, models_after = asyncio.run(_asgi_request(app, "GET", "/v1/models"))
@@ -381,7 +386,27 @@ class TestInferenceService(unittest.TestCase):
         self.assertEqual(len(models_after["models"]), 2)
         ids = {m["clearml_model_id"] for m in models_after["models"]}
         self.assertEqual(ids, {"clearml_ret_id_200", "clearml_gen_id_010"})
-        self.assertTrue(models_after["data_dependency"]["ready"])
+        self.assertFalse(models_after["data_dependency"]["ready"])
+
+        # Trigger lazy adaptation load and verify readiness reflects both engines
+        code_a, _ = asyncio.run(
+            _asgi_request(
+                app,
+                "POST",
+                "/v1/layouts/generate",
+                self._sample_generate_payload("adaptation"),
+            )
+        )
+        self.assertEqual(code_a, 200)
+        status_code, ready_both = asyncio.run(_asgi_request(app, "GET", "/health/ready"))
+        self.assertEqual(status_code, 200)
+        self.assertTrue(ready_both["data_dependency_ready"])
+        self.assertTrue(ready_both["adaptation_initialized"])
+        self.assertEqual(set(ready_both["supported_engines"]), {"adaptation", "neural"})
+        self.assertEqual(
+            ready_both["engine_states"],
+            {"neural": "ready", "adaptation": "ready"},
+        )
 
     def test_4_request_validation(self):
         cfg = self._base_settings()
@@ -516,7 +541,10 @@ class TestInferenceService(unittest.TestCase):
 
     def test_11_missing_adaptation_dataset(self):
         missing_path = self.root / "nonexistent_elements.parquet"
-        cfg = self._base_settings(ELEMENTS_PARQUET_PATH=str(missing_path))
+        cfg = self._base_settings(
+            DEFAULT_ENGINE="adaptation",
+            ELEMENTS_PARQUET_PATH=str(missing_path),
+        )
         app = create_app(cfg)
         p1, p2, p3 = self._mock_clearml_registry()
         with p1, p2, p3:
@@ -578,7 +606,10 @@ class TestInferenceService(unittest.TestCase):
                 self.assertEqual((w, h), (700, 1000))
 
     def test_14_elements_parquet_checksum_mismatch(self):
-        cfg = self._base_settings(ELEMENTS_PARQUET_SHA256="0" * 64)
+        cfg = self._base_settings(
+            DEFAULT_ENGINE="adaptation",
+            ELEMENTS_PARQUET_SHA256="0" * 64,
+        )
         app = create_app(cfg)
         p1, p2, p3 = self._mock_clearml_registry()
         with p1, p2, p3:
@@ -594,6 +625,7 @@ class TestInferenceService(unittest.TestCase):
 
         sha = _compute_file_sha256(self.elements_path)
         params = {
+            "DEFAULT_ENGINE": "adaptation",
             "ELEMENTS_PARQUET_PATH": str(cache_path),
             "ELEMENTS_PARQUET_SHA256": sha,
             "AWS_ACCESS_KEY_ID": "AKIA_TEST_KEY",
@@ -606,14 +638,12 @@ class TestInferenceService(unittest.TestCase):
         return self._base_settings(**params)
 
     def test_15_s3_successful_download_and_startup(self):
-        import shutil
-
         cache_path = self.root / "s3_cache" / "elements.parquet"
         cfg = self._s3_settings(cache_path)
 
         mock_s3 = MagicMock()
 
-        def fake_download(bucket, key, dest_file):
+        def fake_download(bucket, key, dest_file, **kwargs):
             self.assertEqual(bucket, "infographix-private-data")
             self.assertEqual(key, "features/v1/elements.parquet")
             # Ensure download targets a temp file inside cache directory, not dest directly
@@ -747,12 +777,12 @@ class TestInferenceService(unittest.TestCase):
         self.assertFalse(cache_path.exists())
 
     def test_20_s3_checksum_mismatch_leaves_cache_absent(self):
-        import shutil
-
         cache_path = self.root / "s3_bad_sha" / "elements.parquet"
         cfg = self._s3_settings(cache_path, ELEMENTS_PARQUET_SHA256="f" * 64)
         mock_s3 = MagicMock()
-        mock_s3.download_file.side_effect = lambda b, k, dest: shutil.copy2(self.elements_path, dest)
+        mock_s3.download_file.side_effect = lambda b, k, dest, **kw: shutil.copy2(
+            self.elements_path, dest
+        )
 
         app = create_app(cfg)
         p1, p2, p3 = self._mock_clearml_registry()
@@ -769,7 +799,6 @@ class TestInferenceService(unittest.TestCase):
         self.assertEqual(list(cache_path.parent.glob("*.tmp")), [])
 
     def test_21_s3_atomic_cache_replacement(self):
-        import shutil
         from inference_service.app.services.data_loader import _compute_file_sha256, _download_from_s3
 
         cache_dir = self.root / "s3_atomic"
@@ -780,7 +809,9 @@ class TestInferenceService(unittest.TestCase):
         # 1. If S3 download fails checksum, existing cache_path remains untouched
         cfg_bad = self._s3_settings(cache_path, ELEMENTS_PARQUET_SHA256="a" * 64)
         mock_s3 = MagicMock()
-        mock_s3.download_file.side_effect = lambda b, k, dest: shutil.copy2(self.elements_path, dest)
+        mock_s3.download_file.side_effect = lambda b, k, dest, **kw: shutil.copy2(
+            self.elements_path, dest
+        )
         with patch("inference_service.app.services.data_loader.boto3.client", return_value=mock_s3):
             with self.assertRaises(ValueError):
                 _download_from_s3(cfg_bad, cache_path)
@@ -816,6 +847,102 @@ class TestInferenceService(unittest.TestCase):
         df_local, status_local = load_elements_dataframe(cfg_local)
         self.assertEqual(status_local.source, "local_cache")
         self.assertEqual(len(df_local), len(df))
+
+    def test_23_neural_only_startup_skips_elements_parquet(self):
+        missing_path = self.root / "absent_elements.parquet"
+        cfg = self._base_settings(
+            DEFAULT_ENGINE="neural",
+            ELEMENTS_PARQUET_PATH=str(missing_path),
+        )
+        app = create_app(cfg)
+        p1, p2, p3 = self._mock_clearml_registry()
+        with p1, p2, p3, patch(
+            "inference_service.app.services.inference_manager.load_elements_dataframe"
+        ) as mock_load_df:
+            app.state.inference_manager.initialize(cfg)
+            mock_load_df.assert_not_called()
+
+            code_ready, ready_body = asyncio.run(_asgi_request(app, "GET", "/health/ready"))
+            self.assertEqual(code_ready, 200)
+            self.assertEqual(ready_body["supported_engines"], ["neural"])
+            self.assertFalse(ready_body["data_dependency_ready"])
+
+            code_gen, res = asyncio.run(
+                _asgi_request(
+                    app, "POST", "/v1/layouts/generate", self._sample_generate_payload("neural")
+                )
+            )
+            mock_load_df.assert_not_called()
+
+        self.assertEqual(code_gen, 200)
+        self.assertEqual(res["engine"], "neural")
+        self.assertEqual(res["generation_metrics"]["template_slot_source"], "retriever_metadata")
+        self.assertGreater(len(res["layout"]["elements"]), 4)
+        stages = [s["stage"] for s in app.state.inference_manager.memory_tracker.to_list()]
+        self.assertIn("first_neural_inference", stages)
+        self.assertNotIn("parquet_loaded", stages)
+
+    def test_24_concurrent_first_time_adaptation_requests(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from inference_service.app.services.data_loader import load_elements_dataframe
+
+        cfg = self._base_settings(DEFAULT_ENGINE="neural")
+        app = create_app(cfg)
+        p1, p2, p3 = self._mock_clearml_registry()
+        with p1, p2, p3:
+            app.state.inference_manager.initialize(cfg)
+
+        self.assertFalse(app.state.inference_manager.adaptation_initialized)
+
+        with patch(
+            "inference_service.app.services.inference_manager.load_elements_dataframe",
+            wraps=load_elements_dataframe,
+        ) as spy_load:
+            def run_adaptation(_idx: int):
+                return asyncio.run(
+                    _asgi_request(
+                        app,
+                        "POST",
+                        "/v1/layouts/generate",
+                        self._sample_generate_payload("adaptation"),
+                    )
+                )
+
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                results = list(pool.map(run_adaptation, range(6)))
+
+        # Exactly one lazy load even under concurrent first-time adaptation requests
+        self.assertEqual(spy_load.call_count, 1)
+        for code, res in results:
+            self.assertEqual(code, 200)
+            self.assertEqual(res["engine"], "adaptation")
+            self.assertEqual(res["generation_metrics"]["validated_overlap_area"], 0.0)
+
+    def test_25_lazy_adaptation_unavailable_no_silent_fallback(self):
+        missing_path = self.root / "missing_lazy.parquet"
+        cfg = self._base_settings(
+            DEFAULT_ENGINE="neural",
+            ELEMENTS_PARQUET_PATH=str(missing_path),
+        )
+        app = create_app(cfg)
+        p1, p2, p3 = self._mock_clearml_registry()
+        with p1, p2, p3:
+            app.state.inference_manager.initialize(cfg)
+
+        # Neural works cleanly
+        code_n, _ = asyncio.run(
+            _asgi_request(app, "POST", "/v1/layouts/generate", self._sample_generate_payload("neural"))
+        )
+        self.assertEqual(code_n, 200)
+
+        # Adaptation returns 503 and does NOT silently switch to neural
+        code_a, err_a = asyncio.run(
+            _asgi_request(
+                app, "POST", "/v1/layouts/generate", self._sample_generate_payload("adaptation")
+            )
+        )
+        self.assertEqual(code_a, 503)
+        self.assertIn("Adaptation engine unavailable", err_a["detail"])
 
 
 if __name__ == "__main__":

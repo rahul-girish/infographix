@@ -162,6 +162,8 @@ class ReadyHealthResponse(BaseModel):
     model_initialized: bool
     retriever_initialized: bool
     data_dependency_ready: bool
+    adaptation_initialized: bool = False
     selected_models: dict[str, dict[str, Optional[str]]]
     supported_engines: List[str]
+    engine_states: dict[str, str] = Field(default_factory=dict)
     error: Optional[str] = None

@@ -74,18 +74,16 @@ During FastAPI startup (`lifespan` in `inference_service/app/main.py`):
 1. `configure_clearml_credentials` validates `CLEARML_API_ACCESS_KEY` and `CLEARML_API_SECRET_KEY` and calls `Task.set_credentials(...)`.
 2. `load_clearml_retriever` calls `src.registry.clearml_registry.load_registered_retriever(...)`, downloads the ClearML bundle, verifies all SHA-256 checksums in `manifest.json`, confirms `architecture == "LayoutRetriever"`, validates train-only fitting (`_validate_fitted_retriever`), and verifies schema columns.
 3. `load_clearml_neural_model` calls `src.registry.clearml_registry.load_registered_model(...)`, verifies SHA-256 checksums, confirms `architecture == "TemplateConditionedLayoutModel"`, checks feature dimensions `(18, 16)`, and sets `.eval()` mode.
-4. `load_elements_dataframe` loads and validates `elements.parquet`.
-5. Only after all steps succeed does `/health/ready` transition to HTTP `200` (`status: "ready"`). If any step fails, `/health/ready` returns HTTP `503` with a sanitized error message (credentials redacted).
+4. When `DEFAULT_ENGINE=neural` (default), startup skips `elements.parquet` and `LayoutAdapter` completely so the service starts lean and opens its port immediately; `elements.parquet` is lazily loaded and cached on the first `adaptation` request (or eagerly at startup if `DEFAULT_ENGINE=adaptation` or `EAGER_LOAD_ADAPTATION_DATA=true`).
+5. `/health/ready` returns HTTP `200` once the active default engine's dependencies are ready, and accurately reports `adaptation_initialized`, `data_dependency_ready`, `supported_engines`, and `engine_states`. If initialization fails, `/health/ready` returns HTTP `503` with a sanitized error message (credentials redacted).
 
 Models are loaded **once** into memory at startup. The service never registers or promotes models at runtime.
 
 ---
 
-## 4. Adaptation & Template Data Requirement (`elements.parquet`)
+## 4. Adaptation Data Requirement (`elements.parquet`)
 
-Both engines require `elements.parquet` (containing `poster_id`, `element_id`, `category_slug`, `x0`, `y0`, `w_norm`, `h_norm`, `cx`, `cy`, `area_norm`, `raw_x`, `raw_y`, `raw_w`, `raw_h`):
-- **Adaptation Engine**: `LayoutAdapter` reads the retrieved template poster's element rows to build a hierarchical column/section layout for HiGHS optimization.
-- **Neural Engine**: Encodes the retrieved template poster's element rows into `[1, K, 16]` `TemplateSlotItem` tensors.
+Only the **Adaptation Engine** (`adaptation`) requires `elements.parquet` (containing `poster_id`, `element_id`, `category_slug`, `x0`, `y0`, `w_norm`, `h_norm`, `cx`, `cy`, `area_norm`, `raw_x`, `raw_y`, `raw_w`, `raw_h`) to build hierarchical column/section layouts for HiGHS optimization. The **Neural Engine** (`neural`) synthesizes conditioning slots from `LayoutRetriever`'s in-memory poster metadata without downloading `elements.parquet`.
 
 Because large datasets are excluded from the Docker image and Git, `data_loader.py` resolves `elements.parquet` strictly in this precedence order (without silent fallback if a selected remote source fails):
 1. **Local / Cached File (`ELEMENTS_PARQUET_PATH`)**: If the file already exists on disk (persistent disk, local dev, or warm cache), verifies `ELEMENTS_PARQUET_SHA256` (if set) and loads it without re-downloading.

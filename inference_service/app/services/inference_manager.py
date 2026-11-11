@@ -20,7 +20,12 @@ from inference_service.app.schemas.layout import (
 )
 from inference_service.app.services.data_loader import (
     DataDependencyStatus,
+    has_configured_adaptation_source,
     load_elements_dataframe,
+)
+from inference_service.app.services.memory_profiler import (
+    MemoryTracker,
+    trim_process_memory,
 )
 from inference_service.app.services.model_loader import (
     LoadedModelMetadata,
@@ -29,7 +34,6 @@ from inference_service.app.services.model_loader import (
     load_clearml_retriever,
 )
 from src.adaptation.adaptation_evaluation import compute_pairwise_overlap_area
-from src.adaptation.layout_adapter import LayoutAdapter
 from src.features.request_schema import ContentBlockDemand, PosterRequest
 from src.models.layout_retrieval import LayoutRetriever
 from src.neural_layout.dataset import CATEGORY_TO_IDX, TemplateSlotItem, UserContentItem
@@ -39,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 class ServiceNotReadyError(RuntimeError):
-    """Raised when inference is requested before models/data are initialized."""
+    """Raised when an engine or the service is not ready to serve requests."""
 
 
 class InferenceExecutionError(RuntimeError):
@@ -147,11 +151,116 @@ def validate_and_normalize_geometry(
     return validated, geometry_metrics
 
 
-class InferenceManager:
-    """Thread-safe lifecycle and inference manager for ClearML-registered layout models."""
+def _build_template_slots_from_poster_row(poster_row: pd.Series) -> list[TemplateSlotItem]:
+    """Construct conditioning TemplateSlotItems from LayoutRetriever's in-memory poster metadata
+    so the neural engine does not require loading elements.parquet."""
+    raw_cols = poster_row.get("estimated_column_count", 3)
+    k_cols = 3 if pd.isna(raw_cols) else max(1, min(5, int(round(float(raw_cols)))))
 
-    def __init__(self) -> None:
+    slots: list[TemplateSlotItem] = []
+    slot_idx = 0
+
+    # Header band slots (title + author_info)
+    title_cnt = max(1, int(round(float(poster_row.get("count_title", 1) or 1))))
+    auth_cnt = max(1, int(round(float(poster_row.get("count_author_info", 1) or 1))))
+    for t_i in range(min(title_cnt, 2)):
+        y0 = 0.04 + t_i * 0.07
+        slots.append(
+            TemplateSlotItem(
+                slot_id=f"synth_title_{slot_idx}",
+                category_slug="title",
+                category_idx=CATEGORY_TO_IDX["title"],
+                bbox_norm=[0.06, y0, 0.88, 0.065],
+                center=(0.50, y0 + 0.0325),
+                area_norm=0.88 * 0.065,
+                column_idx=0,
+            )
+        )
+        slot_idx += 1
+
+    for a_i in range(min(auth_cnt, 2)):
+        y0 = 0.12 + a_i * 0.045
+        slots.append(
+            TemplateSlotItem(
+                slot_id=f"synth_auth_{slot_idx}",
+                category_slug="author_info",
+                category_idx=CATEGORY_TO_IDX["author_info"],
+                bbox_norm=[0.10, y0, 0.80, 0.04],
+                center=(0.50, y0 + 0.02),
+                area_norm=0.80 * 0.04,
+                column_idx=0,
+            )
+        )
+        slot_idx += 1
+
+    # Body category inventory from poster summary counts
+    body_specs = [
+        ("section", max(0, int(round(float(poster_row.get("count_section", 3) or 0))))),
+        ("text", max(0, int(round(float(poster_row.get("count_text", 3) or 0))))),
+        ("list", max(0, int(round(float(poster_row.get("count_list", 0) or 0))))),
+        ("figure", max(0, int(round(float(poster_row.get("count_figure", 1) or 0))))),
+        ("table", max(0, int(round(float(poster_row.get("count_table", 0) or 0))))),
+        ("caption", max(0, int(round(float(poster_row.get("count_caption", 1) or 0))))),
+    ]
+    body_cats: list[str] = []
+    for cat, count in body_specs:
+        body_cats.extend([cat] * min(count, 12))
+    if not body_cats:
+        body_cats = ["section", "text", "figure", "caption"]
+
+    # Order items across columns cleanly (sections paired before text/media)
+    col_buckets: list[list[str]] = [[] for _ in range(k_cols)]
+    for idx, cat in enumerate(body_cats):
+        col_buckets[idx % k_cols].append(cat)
+
+    margin_x = 0.04
+    gap_x = 0.025
+    col_w = (1.0 - 2.0 * margin_x - max(0, k_cols - 1) * gap_x) / k_cols
+    body_top = 0.19
+    body_height = 0.77
+    gap_y = 0.015
+
+    for c_idx, items in enumerate(col_buckets):
+        if not items:
+            continue
+        x0 = margin_x + c_idx * (col_w + gap_x)
+        weights = [
+            0.04 if cat == "section" else 0.05 if cat == "caption" else 0.16 if cat in ("figure", "table") else 0.14
+            for cat in items
+        ]
+        avail_h = max(0.20, body_height - max(0, len(items) - 1) * gap_y)
+        total_w = sum(weights) or 1.0
+        cur_y = body_top
+        for cat, wt in zip(items, weights):
+            slot_h = max(0.03, min(0.35, avail_h * (wt / total_w)))
+            if cur_y + slot_h > 0.97:
+                slot_h = max(0.02, 0.97 - cur_y)
+            slots.append(
+                TemplateSlotItem(
+                    slot_id=f"synth_{cat}_{slot_idx}",
+                    category_slug=cat,
+                    category_idx=CATEGORY_TO_IDX[cat],
+                    bbox_norm=[x0, cur_y, col_w, slot_h],
+                    center=(x0 + col_w / 2.0, cur_y + slot_h / 2.0),
+                    area_norm=col_w * slot_h,
+                    column_idx=c_idx,
+                )
+            )
+            cur_y = min(0.95, cur_y + slot_h + gap_y)
+            slot_idx += 1
+
+    return slots
+
+
+class InferenceManager:
+    """Thread-safe lifecycle and lazy-engine manager for ClearML-registered layout models."""
+
+    def __init__(self, memory_tracker: MemoryTracker | None = None) -> None:
         self._init_lock = threading.Lock()
+        self._adaptation_lock = threading.Lock()
+        self.memory_tracker = memory_tracker or MemoryTracker()
+
+        self._settings: Settings | None = None
         self.ready: bool = False
         self.init_error: str | None = None
         self.default_engine: str = "neural"
@@ -161,51 +270,111 @@ class InferenceManager:
         self.retriever_info: LoadedModelMetadata | None = None
         self.neural_model: TemplateConditionedLayoutModel | None = None
         self.neural_info: LoadedModelMetadata | None = None
+
         self.elements_df: pd.DataFrame | None = None
+        self._layout_adapter_cls: Any = None
         self.data_status: DataDependencyStatus = DataDependencyStatus(
             ready=False,
-            source="uninitialized",
+            source="not_loaded",
         )
 
+        self._first_neural_profiled = False
+        self._first_adaptation_profiled = False
+
     def initialize(self, settings: Settings) -> None:
-        """Load and verify ClearML models and adaptation data once at startup."""
+        """Load ClearML retriever and neural model at startup; defer adaptation data unless configured eager."""
         with self._init_lock:
+            self._settings = settings
             self.ready = False
             self.init_error = None
             self.default_engine = settings.DEFAULT_ENGINE
             self.torch_device = settings.TORCH_DEVICE
+            self.elements_df = None
+            self._layout_adapter_cls = None
+            self.data_status = DataDependencyStatus(ready=False, source="not_loaded")
+            self._first_neural_profiled = False
+            self._first_adaptation_profiled = False
 
             try:
+                self.memory_tracker.record("dependencies_imported")
                 configure_clearml_credentials(settings)
-                retriever, retriever_info = load_clearml_retriever(settings)
-                neural_model, neural_info = load_clearml_neural_model(settings)
-                elements_df, data_status = load_elements_dataframe(settings)
 
+                retriever, retriever_info = load_clearml_retriever(settings)
                 self.retriever = retriever
                 self.retriever_info = retriever_info
+                self.memory_tracker.record("retriever_loaded")
+
+                neural_model, neural_info = load_clearml_neural_model(settings)
                 self.neural_model = neural_model
                 self.neural_info = neural_info
-                self.elements_df = elements_df
-                self.data_status = data_status
-                self.ready = True
+                self.memory_tracker.record("neural_model_loaded")
 
+                if settings.DEFAULT_ENGINE == "adaptation" or settings.EAGER_LOAD_ADAPTATION_DATA:
+                    self._ensure_adaptation_ready_locked()
+
+                self.ready = True
                 logger.info(
-                    "InferenceManager initialized: retriever=%s (%s), neural=%s (%s), elements=%d rows",
+                    "InferenceManager ready (default_engine=%s, adaptation_loaded=%s): retriever=%s (%s), neural=%s (%s)",
+                    self.default_engine,
+                    self.adaptation_initialized,
                     retriever_info.model_name,
                     retriever_info.clearml_model_id,
                     neural_info.model_name,
                     neural_info.clearml_model_id,
-                    data_status.row_count,
                 )
             except Exception as exc:
                 self.ready = False
                 self.init_error = _sanitize_error_message(exc, settings)
-                self.data_status = DataDependencyStatus(
-                    ready=self.elements_df is not None,
-                    source=self.data_status.source,
-                    error=self.init_error if self.elements_df is None else None,
-                )
+                if self.elements_df is None:
+                    self.data_status = DataDependencyStatus(
+                        ready=False,
+                        source=self.data_status.source,
+                        error=self.init_error,
+                    )
                 logger.error("InferenceManager initialization failed: %s", self.init_error)
+
+    def _ensure_adaptation_ready_locked(self) -> None:
+        if self.elements_df is not None and self._layout_adapter_cls is not None:
+            return
+        if self._settings is None:
+            raise ServiceNotReadyError("InferenceManager settings not initialized.")
+
+        valid_poster_ids: set[int] | None = None
+        if self.retriever is not None and self.retriever.train_posters_ is not None:
+            valid_poster_ids = {
+                int(pid) for pid in self.retriever.train_posters_["poster_id"].tolist()
+            }
+
+        try:
+            elements_df, data_status = load_elements_dataframe(
+                self._settings,
+                valid_poster_ids=valid_poster_ids,
+                memory_tracker=self.memory_tracker,
+            )
+            from src.adaptation.layout_adapter import LayoutAdapter
+
+            self.elements_df = elements_df
+            self.data_status = data_status
+            self._layout_adapter_cls = LayoutAdapter
+            trim_process_memory()
+            self.memory_tracker.record("layout_adapter_initialized")
+        except Exception as exc:
+            sanitized = _sanitize_error_message(exc, self._settings)
+            self.elements_df = None
+            self._layout_adapter_cls = None
+            self.data_status = DataDependencyStatus(
+                ready=False,
+                source="error",
+                error=sanitized,
+            )
+            raise ServiceNotReadyError(f"Adaptation engine unavailable: {sanitized}") from exc
+
+    def ensure_adaptation_ready(self) -> None:
+        """Thread-safe lazy initialization of elements.parquet and LayoutAdapter on first adaptation use."""
+        if self.elements_df is not None and self._layout_adapter_cls is not None:
+            return
+        with self._adaptation_lock:
+            self._ensure_adaptation_ready_locked()
 
     def shutdown(self) -> None:
         with self._init_lock:
@@ -213,14 +382,37 @@ class InferenceManager:
             self.retriever = None
             self.neural_model = None
             self.elements_df = None
+            self._layout_adapter_cls = None
+            trim_process_memory()
+
+    @property
+    def adaptation_initialized(self) -> bool:
+        return self.elements_df is not None and self._layout_adapter_cls is not None
+
+    @property
+    def engine_states(self) -> dict[str, str]:
+        neural_state = (
+            "ready" if (self.retriever is not None and self.neural_model is not None) else "unavailable"
+        )
+        if self.retriever is None:
+            adaptation_state = "unavailable"
+        elif self.adaptation_initialized:
+            adaptation_state = "ready"
+        elif self.data_status.error:
+            adaptation_state = "unavailable"
+        elif self._settings is not None and has_configured_adaptation_source(self._settings):
+            adaptation_state = "lazy_uninitialized"
+        else:
+            adaptation_state = "unavailable"
+        return {"neural": neural_state, "adaptation": adaptation_state}
 
     @property
     def supported_engines(self) -> list[str]:
         engines: list[str] = []
-        if self.retriever is not None and self.elements_df is not None:
-            engines.append("adaptation")
-        if self.retriever is not None and self.neural_model is not None and self.elements_df is not None:
+        if self.retriever is not None and self.neural_model is not None:
             engines.append("neural")
+        if self.retriever is not None and self.adaptation_initialized:
+            engines.append("adaptation")
         return engines
 
     def get_readiness_snapshot(self) -> dict[str, Any]:
@@ -229,6 +421,7 @@ class InferenceManager:
             "model_initialized": self.neural_model is not None,
             "retriever_initialized": self.retriever is not None,
             "data_dependency_ready": self.data_status.ready and self.elements_df is not None,
+            "adaptation_initialized": self.adaptation_initialized,
             "selected_models": {
                 "retriever": {
                     "model_name": self.retriever_info.model_name if self.retriever_info else None,
@@ -250,6 +443,7 @@ class InferenceManager:
                 },
             },
             "supported_engines": self.supported_engines,
+            "engine_states": self.engine_states,
             "error": self.init_error,
         }
 
@@ -282,6 +476,8 @@ class InferenceManager:
                 "sha256": self.data_status.sha256,
                 "row_count": self.data_status.row_count,
                 "poster_count": self.data_status.poster_count,
+                "artifact_size_mib": self.data_status.artifact_size_mib,
+                "dataset_mem_mib": self.data_status.dataset_mem_mib,
                 "error": self.data_status.error,
             },
         }
@@ -499,6 +695,40 @@ class InferenceManager:
         )
         return req, blocks_meta
 
+    def _get_neural_template_slots(self, template_poster_id: int) -> tuple[list[np.ndarray], str]:
+        assert self.retriever is not None and self.retriever.train_posters_ is not None
+
+        if self.elements_df is not None:
+            tmpl_rows = self.elements_df[self.elements_df["poster_id"] == template_poster_id]
+            tmpl_vecs: list[np.ndarray] = []
+            for _, row in tmpl_rows.iterrows():
+                cat = str(row.get("category_slug", "text"))
+                if cat not in CATEGORY_TO_IDX:
+                    continue
+                slot = TemplateSlotItem(
+                    slot_id=str(row["element_id"]),
+                    category_slug=cat,
+                    category_idx=CATEGORY_TO_IDX[cat],
+                    bbox_norm=[float(row["x0"]), float(row["y0"]), float(row["w_norm"]), float(row["h_norm"])],
+                    center=(float(row["cx"]), float(row["cy"])),
+                    area_norm=float(row["area_norm"]),
+                )
+                tmpl_vecs.append(slot.to_feature_vector())
+            if tmpl_vecs:
+                return tmpl_vecs, "elements_df"
+
+        # Synthesize conditioning slots from retriever's in-memory train_posters_ metadata
+        # so the neural engine never triggers loading elements.parquet.
+        matched = self.retriever.train_posters_[
+            self.retriever.train_posters_["poster_id"] == template_poster_id
+        ]
+        if len(matched) == 0:
+            raise InferenceExecutionError(
+                f"Retrieved template {template_poster_id} missing from retriever train_posters_."
+            )
+        synth_slots = _build_template_slots_from_poster_row(matched.iloc[0])
+        return [slot.to_feature_vector() for slot in synth_slots], "retriever_metadata"
+
     def _run_neural_engine(
         self,
         req: PosterRequest,
@@ -508,7 +738,6 @@ class InferenceManager:
         canvas_h: int,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         assert self.neural_model is not None
-        assert self.elements_df is not None
 
         total_items = max(1, len(req.blocks))
         content_vecs: list[np.ndarray] = []
@@ -538,33 +767,7 @@ class InferenceManager:
             )
             content_vecs.append(item.to_feature_vector(total_items=total_items, include_order_index=True))
 
-        tmpl_rows = self.elements_df[self.elements_df["poster_id"] == template_poster_id]
-        tmpl_vecs: list[np.ndarray] = []
-        for _, row in tmpl_rows.iterrows():
-            cat = str(row.get("category_slug", "text"))
-            if cat not in CATEGORY_TO_IDX:
-                continue
-            x0 = float(row["x0"])
-            y0 = float(row["y0"])
-            wn = float(row["w_norm"])
-            hn = float(row["h_norm"])
-            cx = float(row["cx"])
-            cy = float(row["cy"])
-            area = float(row["area_norm"])
-            slot = TemplateSlotItem(
-                slot_id=str(row["element_id"]),
-                category_slug=cat,
-                category_idx=CATEGORY_TO_IDX[cat],
-                bbox_norm=[x0, y0, wn, hn],
-                center=(cx, cy),
-                area_norm=area,
-            )
-            tmpl_vecs.append(slot.to_feature_vector())
-
-        if not tmpl_vecs:
-            raise InferenceExecutionError(
-                f"Retrieved template {template_poster_id} has no valid slots in elements dataset."
-            )
+        tmpl_vecs, slot_source = self._get_neural_template_slots(template_poster_id)
 
         device = torch.device(self.torch_device)
         content_tensor = torch.tensor(np.stack(content_vecs), dtype=torch.float32, device=device).unsqueeze(0)
@@ -592,6 +795,7 @@ class InferenceManager:
             "predicted_macro_columns": pred_macro,
             "num_content_blocks": len(req.blocks),
             "num_template_slots": len(tmpl_vecs),
+            "template_slot_source": slot_source,
         }
         return raw_elements, metrics
 
@@ -602,10 +806,10 @@ class InferenceManager:
         canvas_w: int,
         canvas_h: int,
     ) -> tuple[list[dict[str, Any]], dict[str, Any], str, int]:
-        assert self.elements_df is not None
+        self.ensure_adaptation_ready()
+        assert self.elements_df is not None and self._layout_adapter_cls is not None
 
-        # Per-request LayoutAdapter instance keeps concurrent orientation requests isolated
-        adapter = LayoutAdapter(
+        adapter = self._layout_adapter_cls(
             elements_df=self.elements_df,
             canvas_width=canvas_w,
             canvas_height=canvas_h,
@@ -941,7 +1145,7 @@ class InferenceManager:
 
     def generate(self, payload: GenerateLayoutRequest) -> dict[str, Any]:
         """Execute retrieval + selected layout generation engine and return structured layout + provenance."""
-        if not self.ready or self.retriever is None or self.retriever_info is None or self.elements_df is None:
+        if not self.ready or self.retriever is None or self.retriever_info is None:
             raise ServiceNotReadyError(
                 self.init_error or "Inference service has not completed model initialization."
             )
@@ -1023,6 +1227,13 @@ class InferenceManager:
             canvas_h=canvas_h,
             accent_color=poster_in.accentColor,
         )
+
+        if engine == "neural" and not self._first_neural_profiled:
+            self._first_neural_profiled = True
+            self.memory_tracker.record("first_neural_inference")
+        elif engine == "adaptation" and not self._first_adaptation_profiled:
+            self._first_adaptation_profiled = True
+            self.memory_tracker.record("first_adaptation_inference")
 
         now_iso = datetime.now(timezone.utc).isoformat()
         layout_doc = {
