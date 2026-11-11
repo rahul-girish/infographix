@@ -52,6 +52,11 @@ Copy `inference_service/.env.example` to `inference_service/.env` for local runs
 | `DEFAULT_ENGINE` | No | `neural` or `adaptation` (default `neural`) |
 | `TORCH_DEVICE` | No | `cpu` (default) |
 | `ELEMENTS_PARQUET_PATH` | Yes | Local/cached path to `elements.parquet` (default `/app/data_cache/elements.parquet`) |
+| `AWS_ACCESS_KEY_ID` | If S3 | AWS access key ID for private S3 bucket |
+| `AWS_SECRET_ACCESS_KEY` | If S3 | AWS secret access key for private S3 bucket |
+| `AWS_DEFAULT_REGION` | If S3 | AWS region (e.g. `us-east-1`) |
+| `S3_BUCKET_NAME` | If S3 | Private S3 bucket name (required with `S3_OBJECT_KEY`) |
+| `S3_OBJECT_KEY` | If S3 | S3 object key (e.g. `data/processed/features/v1/elements.parquet`) |
 | `ELEMENTS_PARQUET_URL` | No | HTTPS URL to download `elements.parquet` if not cached |
 | `ELEMENTS_PARQUET_SHA256` | No | Expected SHA-256 hex digest for `elements.parquet` |
 | `CLEARML_DATASET_ID` / `CLEARML_DATASET_NAME` | No | Optional ClearML Dataset source for `elements.parquet` |
@@ -82,11 +87,12 @@ Both engines require `elements.parquet` (containing `poster_id`, `element_id`, `
 - **Adaptation Engine**: `LayoutAdapter` reads the retrieved template poster's element rows to build a hierarchical column/section layout for HiGHS optimization.
 - **Neural Engine**: Encodes the retrieved template poster's element rows into `[1, K, 16]` `TemplateSlotItem` tensors.
 
-Because large datasets are excluded from the Docker image and Git, `data_loader.py` resolves `elements.parquet` in this order:
-1. Existing file at `ELEMENTS_PARQUET_PATH` (e.g., Render Persistent Disk or Docker volume).
-2. Download from `ELEMENTS_PARQUET_URL` (recommended for stateless containers, paired with `ELEMENTS_PARQUET_SHA256`).
-3. Download from a ClearML Dataset (`CLEARML_DATASET_ID` or `CLEARML_DATASET_NAME`).
-4. Pull via `minidvc` (`MINIDVC_SNAPSHOT` + `MINIDVC_CLIENT_ID` / `MINIDVC_CLIENT_SECRET` / `MINIDVC_REFRESH_TOKEN`).
+Because large datasets are excluded from the Docker image and Git, `data_loader.py` resolves `elements.parquet` strictly in this precedence order (without silent fallback if a selected remote source fails):
+1. **Local / Cached File (`ELEMENTS_PARQUET_PATH`)**: If the file already exists on disk (persistent disk, local dev, or warm cache), verifies `ELEMENTS_PARQUET_SHA256` (if set) and loads it without re-downloading.
+2. **Private AWS S3 (`S3_BUCKET_NAME` + `S3_OBJECT_KEY`)**: Downloads via `boto3` using `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_DEFAULT_REGION` to a temp file in the cache directory, verifies `ELEMENTS_PARQUET_SHA256`, and atomically promotes it via `os.replace`. Both `S3_BUCKET_NAME` and `S3_OBJECT_KEY` are required when S3 is selected.
+3. **HTTPS URL (`ELEMENTS_PARQUET_URL`)**: Streams download to a temp file, verifies `ELEMENTS_PARQUET_SHA256` (if set), and atomically promotes it.
+4. **ClearML Dataset (`CLEARML_DATASET_ID` or `CLEARML_DATASET_NAME`)**: Downloads via `clearml.Dataset.get(...)` and verifies checksum.
+5. **Minidvc (`MINIDVC_SNAPSHOT`)**: Pulls and checks out via `minidvc` CLI and verifies checksum.
 
 ---
 

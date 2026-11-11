@@ -64,6 +64,8 @@ def _sanitize_error_message(exc: Exception, settings: Settings | None = None) ->
         for secret in (
             settings.CLEARML_API_SECRET_KEY,
             settings.CLEARML_API_ACCESS_KEY,
+            settings.AWS_SECRET_ACCESS_KEY or "",
+            settings.AWS_ACCESS_KEY_ID or "",
             settings.MINIDVC_CLIENT_SECRET or "",
             settings.MINIDVC_REFRESH_TOKEN or "",
         ):

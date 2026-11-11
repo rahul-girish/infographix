@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -586,6 +588,234 @@ class TestInferenceService(unittest.TestCase):
         self.assertEqual(code, 503)
         self.assertFalse(body["data_dependency_ready"])
         self.assertIn("Checksum mismatch", body["error"])
+
+    def _s3_settings(self, cache_path: Path, **overrides) -> Settings:
+        from inference_service.app.services.data_loader import _compute_file_sha256
+
+        sha = _compute_file_sha256(self.elements_path)
+        params = {
+            "ELEMENTS_PARQUET_PATH": str(cache_path),
+            "ELEMENTS_PARQUET_SHA256": sha,
+            "AWS_ACCESS_KEY_ID": "AKIA_TEST_KEY",
+            "AWS_SECRET_ACCESS_KEY": "aws_super_secret_value",
+            "AWS_DEFAULT_REGION": "us-east-1",
+            "S3_BUCKET_NAME": "infographix-private-data",
+            "S3_OBJECT_KEY": "features/v1/elements.parquet",
+        }
+        params.update(overrides)
+        return self._base_settings(**params)
+
+    def test_15_s3_successful_download_and_startup(self):
+        import shutil
+
+        cache_path = self.root / "s3_cache" / "elements.parquet"
+        cfg = self._s3_settings(cache_path)
+
+        mock_s3 = MagicMock()
+
+        def fake_download(bucket, key, dest_file):
+            self.assertEqual(bucket, "infographix-private-data")
+            self.assertEqual(key, "features/v1/elements.parquet")
+            # Ensure download targets a temp file inside cache directory, not dest directly
+            self.assertNotEqual(Path(dest_file), cache_path)
+            self.assertEqual(Path(dest_file).parent, cache_path.parent)
+            shutil.copy2(self.elements_path, dest_file)
+
+        mock_s3.download_file.side_effect = fake_download
+
+        app = create_app(cfg)
+        p1, p2, p3 = self._mock_clearml_registry()
+        with p1, p2, p3, patch(
+            "inference_service.app.services.data_loader.boto3.client", return_value=mock_s3
+        ) as mock_boto:
+            app.state.inference_manager.initialize(cfg)
+
+        mock_boto.assert_called_once()
+        _, kwargs = mock_boto.call_args
+        self.assertEqual(kwargs["aws_access_key_id"], "AKIA_TEST_KEY")
+        self.assertEqual(kwargs["aws_secret_access_key"], "aws_super_secret_value")
+        self.assertEqual(kwargs["region_name"], "us-east-1")
+
+        self.assertTrue(cache_path.exists())
+        self.assertEqual(list(cache_path.parent.glob("*.tmp")), [])
+        self.assertEqual(app.state.inference_manager.data_status.source, "s3")
+
+        code, ready_body = asyncio.run(_asgi_request(app, "GET", "/health/ready"))
+        self.assertEqual(code, 200)
+        self.assertTrue(ready_body["data_dependency_ready"])
+
+    def test_16_s3_missing_credentials_and_incomplete_config(self):
+        from inference_service.app.services.data_loader import load_elements_dataframe
+
+        # Missing AWS credentials (even if ELEMENTS_PARQUET_URL is set, must NOT fall back)
+        cache_path = self.root / "s3_missing_creds" / "elements.parquet"
+        cfg = self._s3_settings(
+            cache_path,
+            AWS_ACCESS_KEY_ID="",
+            AWS_SECRET_ACCESS_KEY="",
+            ELEMENTS_PARQUET_URL="https://example.com/should_not_fallback.parquet",
+        )
+        with patch("inference_service.app.services.data_loader._download_from_url") as mock_url:
+            with self.assertRaises(RuntimeError) as ctx:
+                load_elements_dataframe(cfg)
+            self.assertIn("AWS S3 credentials missing", str(ctx.exception))
+            mock_url.assert_not_called()
+
+        # Incomplete S3 config (bucket set without key) must fail clearly without fallback
+        cfg_partial = self._s3_settings(
+            cache_path,
+            S3_OBJECT_KEY="",
+            ELEMENTS_PARQUET_URL="https://example.com/should_not_fallback.parquet",
+        )
+        with patch("inference_service.app.services.data_loader._download_from_url") as mock_url:
+            with self.assertRaises(ValueError) as ctx:
+                load_elements_dataframe(cfg_partial)
+            self.assertIn("S3_BUCKET_NAME and S3_OBJECT_KEY", str(ctx.exception))
+            mock_url.assert_not_called()
+
+    def test_17_s3_access_denied(self):
+        from botocore.exceptions import ClientError
+
+        cache_path = self.root / "s3_403" / "elements.parquet"
+        cfg = self._s3_settings(
+            cache_path,
+            ELEMENTS_PARQUET_URL="https://example.com/should_not_fallback.parquet",
+        )
+        mock_s3 = MagicMock()
+        mock_s3.download_file.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Access Denied"}, "ResponseMetadata": {"HTTPStatusCode": 403}},
+            "GetObject",
+        )
+
+        app = create_app(cfg)
+        p1, p2, p3 = self._mock_clearml_registry()
+        with p1, p2, p3, patch(
+            "inference_service.app.services.data_loader.boto3.client", return_value=mock_s3
+        ), patch("inference_service.app.services.data_loader._download_from_url") as mock_url:
+            app.state.inference_manager.initialize(cfg)
+            mock_url.assert_not_called()
+
+        code, body = asyncio.run(_asgi_request(app, "GET", "/health/ready"))
+        self.assertEqual(code, 503)
+        self.assertIn("Access denied", body["error"])
+        self.assertNotIn("aws_super_secret_value", body["error"])
+        self.assertFalse(cache_path.exists())
+
+    def test_18_s3_missing_object(self):
+        from botocore.exceptions import ClientError
+
+        cache_path = self.root / "s3_404" / "elements.parquet"
+        cfg = self._s3_settings(cache_path)
+        mock_s3 = MagicMock()
+        mock_s3.download_file.side_effect = ClientError(
+            {"Error": {"Code": "NoSuchKey", "Message": "Not Found"}, "ResponseMetadata": {"HTTPStatusCode": 404}},
+            "GetObject",
+        )
+
+        app = create_app(cfg)
+        p1, p2, p3 = self._mock_clearml_registry()
+        with p1, p2, p3, patch(
+            "inference_service.app.services.data_loader.boto3.client", return_value=mock_s3
+        ):
+            app.state.inference_manager.initialize(cfg)
+
+        code, body = asyncio.run(_asgi_request(app, "GET", "/health/ready"))
+        self.assertEqual(code, 503)
+        self.assertIn("S3 object not found", body["error"])
+        self.assertFalse(cache_path.exists())
+
+    def test_19_s3_network_failure(self):
+        from botocore.exceptions import EndpointConnectionError
+
+        cache_path = self.root / "s3_net" / "elements.parquet"
+        cfg = self._s3_settings(cache_path)
+        mock_s3 = MagicMock()
+        mock_s3.download_file.side_effect = EndpointConnectionError(
+            endpoint_url="https://s3.us-east-1.amazonaws.com"
+        )
+
+        app = create_app(cfg)
+        p1, p2, p3 = self._mock_clearml_registry()
+        with p1, p2, p3, patch(
+            "inference_service.app.services.data_loader.boto3.client", return_value=mock_s3
+        ):
+            app.state.inference_manager.initialize(cfg)
+
+        code, body = asyncio.run(_asgi_request(app, "GET", "/health/ready"))
+        self.assertEqual(code, 503)
+        self.assertIn("Network or transport error", body["error"])
+        self.assertFalse(cache_path.exists())
+
+    def test_20_s3_checksum_mismatch_leaves_cache_absent(self):
+        import shutil
+
+        cache_path = self.root / "s3_bad_sha" / "elements.parquet"
+        cfg = self._s3_settings(cache_path, ELEMENTS_PARQUET_SHA256="f" * 64)
+        mock_s3 = MagicMock()
+        mock_s3.download_file.side_effect = lambda b, k, dest: shutil.copy2(self.elements_path, dest)
+
+        app = create_app(cfg)
+        p1, p2, p3 = self._mock_clearml_registry()
+        with p1, p2, p3, patch(
+            "inference_service.app.services.data_loader.boto3.client", return_value=mock_s3
+        ):
+            app.state.inference_manager.initialize(cfg)
+
+        code, body = asyncio.run(_asgi_request(app, "GET", "/health/ready"))
+        self.assertEqual(code, 503)
+        self.assertIn("Checksum mismatch", body["error"])
+        # Corrupt download must NEVER be promoted into final cache path
+        self.assertFalse(cache_path.exists())
+        self.assertEqual(list(cache_path.parent.glob("*.tmp")), [])
+
+    def test_21_s3_atomic_cache_replacement(self):
+        import shutil
+        from inference_service.app.services.data_loader import _compute_file_sha256, _download_from_s3
+
+        cache_dir = self.root / "s3_atomic"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = cache_dir / "elements.parquet"
+        cache_path.write_bytes(b"previous-valid-cache-content")
+
+        # 1. If S3 download fails checksum, existing cache_path remains untouched
+        cfg_bad = self._s3_settings(cache_path, ELEMENTS_PARQUET_SHA256="a" * 64)
+        mock_s3 = MagicMock()
+        mock_s3.download_file.side_effect = lambda b, k, dest: shutil.copy2(self.elements_path, dest)
+        with patch("inference_service.app.services.data_loader.boto3.client", return_value=mock_s3):
+            with self.assertRaises(ValueError):
+                _download_from_s3(cfg_bad, cache_path)
+        self.assertEqual(cache_path.read_bytes(), b"previous-valid-cache-content")
+        self.assertEqual(list(cache_dir.glob("*.tmp")), [])
+
+        # 2. If S3 download passes checksum, os.replace atomically swaps new file into cache_path
+        expected_sha = _compute_file_sha256(self.elements_path)
+        cfg_good = self._s3_settings(cache_path, ELEMENTS_PARQUET_SHA256=expected_sha)
+        with patch("inference_service.app.services.data_loader.boto3.client", return_value=mock_s3):
+            with patch(
+                "inference_service.app.services.data_loader.os.replace", wraps=os.replace
+            ) as mock_replace:
+                actual_sha = _download_from_s3(cfg_good, cache_path)
+        self.assertEqual(actual_sha, expected_sha)
+        mock_replace.assert_called_once()
+        self.assertEqual(_compute_file_sha256(cache_path), expected_sha)
+        self.assertEqual(list(cache_dir.glob("*.tmp")), [])
+
+    def test_22_existing_cached_file_reuse_and_local_path_loading(self):
+        from inference_service.app.services.data_loader import load_elements_dataframe
+
+        # Existing cached file is reused without invoking S3 even when S3 vars are configured
+        cfg = self._s3_settings(self.elements_path)
+        with patch("inference_service.app.services.data_loader.boto3.client") as mock_boto:
+            df, status = load_elements_dataframe(cfg)
+        mock_boto.assert_not_called()
+        self.assertEqual(status.source, "local_cache")
+        self.assertGreater(len(df), 0)
+
+        # Local-path loading without S3 configured still works identically
+        cfg_local = self._base_settings(ELEMENTS_PARQUET_PATH=str(self.elements_path))
+        df_local, status_local = load_elements_dataframe(cfg_local)
+        self.assertEqual(status_local.source, "local_cache")
+        self.assertEqual(len(df_local), len(df))
 
 
 if __name__ == "__main__":

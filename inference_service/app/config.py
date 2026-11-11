@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     ELEMENTS_PARQUET_URL: Optional[str] = None
     ELEMENTS_PARQUET_SHA256: Optional[str] = None
 
+    # Optional private AWS S3 source for elements.parquet
+    AWS_ACCESS_KEY_ID: Optional[str] = None
+    AWS_SECRET_ACCESS_KEY: Optional[str] = None
+    AWS_DEFAULT_REGION: Optional[str] = None
+    S3_BUCKET_NAME: Optional[str] = None
+    S3_OBJECT_KEY: Optional[str] = None
+
     # Optional ClearML Dataset or Minidvc source for elements.parquet
     CLEARML_DATASET_ID: Optional[str] = None
     CLEARML_DATASET_NAME: Optional[str] = None
