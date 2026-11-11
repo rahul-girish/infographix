@@ -1,7 +1,33 @@
-export type ProjectStatus = "draft" | "submitted";
 export type Orientation = "portrait" | "landscape";
+export type EngineType = "adaptation" | "neural";
 export type PosterElementType = "text" | "image" | "rect" | "circle" | "line" | "arrow";
 export type TextAlignment = "left" | "center" | "right";
+export type ContentBlockType = "section" | "text" | "figure" | "table" | "list";
+
+export interface ContentBlockInput {
+  id: string;
+  type: ContentBlockType;
+  heading?: string;
+  text?: string;
+  imageDataUrl?: string;
+  aspectRatio?: number;
+  tableRows?: number;
+  tableCols?: number;
+  caption?: string;
+  priority?: number;
+}
+
+export interface PosterGenerateRequest {
+  title: string;
+  authors: string;
+  affiliations?: string;
+  orientation: Orientation;
+  preferredColumns?: number | null;
+  accentColor: string;
+  background: string;
+  engine: EngineType;
+  blocks: ContentBlockInput[];
+}
 
 export interface PosterElement {
   id: string;
@@ -32,51 +58,63 @@ export interface PosterElement {
   assetId?: string;
   src?: string;
   points?: number[];
+  sourceBlockId?: string;
+  semanticRole?: string;
+  bboxNorm?: number[];
 }
 
 export interface PosterDocument {
   id: string;
-  projectId: string;
   title: string;
   width: number;
   height: number;
   orientation: Orientation;
   background: string;
-  templateId: string;
+  accentColor: string;
   columns: number;
   elements: PosterElement[];
   updatedAt: string;
 }
 
-export interface ResearchSection {
-  id: string;
-  title: string;
-  content: string;
-  included: boolean;
+export interface CandidateTemplateMeta {
+  rank: number;
+  poster_id: string;
+  orientation: string;
+  estimated_column_count: number;
+  relevance_score: number;
 }
 
-export interface Project {
+export interface GenerationRun {
   id: string;
-  title: string;
-  status: ProjectStatus;
+  createdAt: string;
   updatedAt: string;
-  templateId: string;
-  sections: ResearchSection[];
-  documentName?: string;
-  poster?: PosterDocument;
+  title: string;
+  authors: string;
+  orientation: Orientation;
+  engine: EngineType;
+  modelName: string;
+  modelVersion: string;
+  retrievedTemplateId?: string | null;
+  candidateTemplates: CandidateTemplateMeta[];
+  generationMetrics: Record<string, unknown>;
+  poster: PosterDocument;
+  wasEdited: boolean;
+  exportedFormats: string[];
+  feedbackRating?: number | null;
+  feedbackNotes?: string | null;
 }
 
-export interface ProjectUser {
-  name: string;
-  email: string;
-}
-
-export interface PosterTemplate {
+export interface GenerationRunSummary {
   id: string;
-  name: string;
-  category: string;
-  description: string;
-  accent: string;
-  background: string;
-  columns: number;
+  createdAt: string;
+  title: string;
+  orientation: Orientation;
+  engine: EngineType;
+  modelName: string;
+  modelVersion: string;
+  retrievedTemplateId?: string | null;
+  wasEdited: boolean;
+  exportedFormats: string[];
+  feedbackRating?: number | null;
+  generationMetrics: Record<string, unknown>;
 }

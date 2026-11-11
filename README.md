@@ -102,6 +102,18 @@ model, manifest = load_registered_model(
 - [`docs/NEURAL_LAYOUT_AND_CLEARML_REGISTRY.md`](docs/NEURAL_LAYOUT_AND_CLEARML_REGISTRY.md) — Stage A/B Neural Layout pipeline, ClearML Cloud tracking, and ClearML Native Model Registry handover guide.
 - [`docs/FEATURE_ENGINEERING_AND_MODELING_V2.md`](docs/FEATURE_ENGINEERING_AND_MODELING_V2.md) — Multi-table feature engineering & v2 retrieval pipeline.
 - [`docs/STAGE3_ADAPTATION_AND_GENERATION.md`](docs/STAGE3_ADAPTATION_AND_GENERATION.md) — Layout adaptation benchmarks & rendering formats.
+- [`docs/BACKEND_ARCHITECTURE.md`](docs/BACKEND_ARCHITECTURE.md) & [`docs/BACKEND_API_SPECIFICATION.md`](docs/BACKEND_API_SPECIFICATION.md) — Streamlined FastAPI inference & MLOps telemetry service (`POST /api/v1/generate`, `/runs`, `/export/pdf`).
+- [`docs/DATABASE_DESIGN.md`](docs/DATABASE_DESIGN.md) — Supabase PostgreSQL `generation_runs` schema for storing raw inputs, model outputs, and human edits.
+- [`docs/FRONTEND_ARCHITECTURE.md`](docs/FRONTEND_ARCHITECTURE.md) & [`docs/DEPLOYMENT_GUIDE.md`](docs/DEPLOYMENT_GUIDE.md) — Minimal React + Konva input/editor UI, PNG/PDF export, and Supabase deployment guide.
+
+### Running the Web App (Model Testing & Data Collection)
+```bash
+# 1. Start FastAPI backend (loads LayoutRetriever + LayoutAdapter / Neural model)
+PYTHONPATH=. .venv/bin/uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
+
+# 2. Start Vite + React frontend
+cd frontend && npm run dev
+```
 
 ---
 

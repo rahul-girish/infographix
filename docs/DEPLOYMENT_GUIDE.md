@@ -1,83 +1,67 @@
-# Infographix — Deployment & Operations Guide
+# Infographix — Deployment & Supabase Setup Guide
 
-This guide covers running Infographix in local development, containerized testing via Docker Compose, and deploying to cloud infrastructure.
+This guide covers connecting **Supabase PostgreSQL**, running locally, and deploying the streamlined frontend and backend.
 
 ---
 
-## 1. Local Development (WSL2 / Linux / Windows)
+## 1. Supabase PostgreSQL Setup
 
-### 1.1 Prerequisites
-* Python 3.12+ (or `uv` package manager)
-* Node.js 20+ and npm
-* PostgreSQL 16+ (or Docker Desktop)
+1. In your Supabase project dashboard, open **Connect → Connection string → URI**.
+2. Select **Session pooler** (port `5432`) so IPv4 hosts (Render, Railway, Docker, WSL) can connect reliably.
+3. Convert the URI prefix to `postgresql+psycopg2://` and append `?sslmode=require`:
+   ```env
+   DATABASE_URL=postgresql+psycopg2://postgres.<project-ref>:<url-encoded-password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require
+   ```
+4. Place this in `backend/.env` for local testing or set it as an environment variable in your cloud host.
+5. Initialize the `generation_runs` table (or simply start the FastAPI app, which creates missing tables on startup):
+   ```bash
+   PYTHONPATH=. python -m backend.app.db.init_db
+   ```
 
-### 1.2 Start PostgreSQL Database
-Using Docker:
-```bash
-docker run -d --name infographix-postgres \
-  -p 5432:5432 \
-  -e POSTGRES_USER=postgres \
-  -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=infographix \
-  -v infographix_pgdata:/var/lib/postgresql/data \
-  postgres:16-alpine
-```
+---
 
-### 1.3 Start Backend Service (FastAPI)
+## 2. Local Development
+
+### Backend (FastAPI + ML Pipeline)
 From the repository root:
 ```bash
-# 1. Install dependencies
 uv pip install -r backend/requirements.txt
-
-# 2. Run database initialization
-PYTHONPATH=. python -m backend.app.db.init_db
-
-# 3. Start Uvicorn development server
 PYTHONPATH=. uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
-* Interactive API Documentation (Swagger UI): `http://localhost:8000/docs`
-* Health Check: `http://localhost:8000/api/v1/health`
+- Health check: `http://localhost:8000/api/v1/health`
+- Swagger UI: `http://localhost:8000/docs`
 
-### 1.4 Start Frontend Client (Vite + React)
-From the repository root:
+### Frontend (Vite + React)
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
-* Frontend runs at: `http://localhost:5173`
-* Requests to `/api/*` automatically proxy to the FastAPI server at `http://localhost:8000`.
+- App URL: `http://localhost:5173` (proxies `/api/*` to `http://localhost:8000`).
 
 ---
 
-## 2. Containerized Deployment (Docker Compose)
+## 3. Containerized Backend (`docker-compose.yml`)
 
-The repository provides a production-grade multi-service orchestration setup via [`docker-compose.yml`](file:///wsl.localhost/Ubuntu-24.04/home/raksh/projects/infographix/docker-compose.yml):
+The root [`docker-compose.yml`](../docker-compose.yml) builds [`backend/Dockerfile`](../backend/Dockerfile) from the repository root context so `backend/`, `src/`, `models/registry/`, `models/checkpoints/neural_layout/best_model.pt`, and `data/processed/features/v1/elements.parquet` are packaged together:
 
 ```bash
-# Build and launch all services in detached mode
 docker compose up --build -d
-
-# Check service logs
-docker compose logs -f backend
-
-# Verify health status
 curl http://localhost:8000/api/v1/health
 ```
 
-### Volume Persistence:
-* `postgres_data`: Persists all PostgreSQL database tables, user records, and poster canvas JSONB across container restarts.
-* `uploads_data`: Persists uploaded PDFs, DOCXs, and image assets mounted to `/app/backend/data/uploads`.
-
 ---
 
-## 3. Production Hardening Checklist
+## 4. Separate Cloud Deployments (Monorepo)
 
-1. **Secret Key**: Generate a secure 64-character secret key for `SECRET_KEY`:
-   ```bash
-   python -c "import secrets; print(secrets.token_hex(32))"
-   ```
-2. **CORS Configuration**: Restrict `CORS_ORIGINS` in `backend/.env` to the specific production frontend domain.
-3. **Database Credentials**: Use strong passwords for `POSTGRES_USER` and `POSTGRES_PASSWORD` injected via container environment secrets.
-4. **File Storage Quotas**: The backend automatically enforces a 20 MB cap on documents and 10 MB on image assets to prevent disk exhaustion.
-
+- **Frontend (Vercel / Netlify / Cloudflare Pages):**
+  - Root directory: `frontend`
+  - Build command: `npm run build`
+  - Output directory: `dist`
+  - Env var: `VITE_API_BASE_URL=https://<your-backend-domain>/api`
+- **Backend (Railway / Render / Fly.io / VPS):**
+  - Build using `backend/Dockerfile` with build context `.` (repo root)
+  - Env vars:
+    - `DATABASE_URL=<supabase-session-pooler-uri>`
+    - `CORS_ORIGINS=["https://<your-frontend-domain>"]`
+    - `DEFAULT_ENGINE=adaptation`

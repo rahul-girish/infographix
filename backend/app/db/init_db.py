@@ -1,12 +1,13 @@
-from backend.app.db.session import engine
 from backend.app.db.base import Base
-import backend.app.models
+from backend.app.db.session import engine
+import backend.app.models  # noqa: F401
+
 
 def init_db() -> None:
-    print("Creating all tables in PostgreSQL...")
+    print("Creating all MLOps tables in database...")
     Base.metadata.create_all(bind=engine)
-    print("All PostgreSQL tables created successfully!")
+    print("Database tables created successfully!")
+
 
 if __name__ == "__main__":
     init_db()
-

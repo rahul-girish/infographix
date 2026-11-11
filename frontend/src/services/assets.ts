@@ -1,26 +1,44 @@
-import { apiClient } from "./apiClient";
+export interface LoadedImageResult {
+  dataUrl: string;
+  width: number;
+  height: number;
+  aspectRatio: number;
+}
 
 export const assetsService = {
-  async readImage(file: File, projectId?: string): Promise<string> {
-    if (!file.type.startsWith("image/")) throw new Error("Choose an image file.");
-    
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-      if (projectId) formData.append("project_id", projectId);
+  readImage(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      if (!file.type.startsWith("image/")) {
+        reject(new Error("Please select a valid image file (PNG, JPG, WEBP, or SVG)."));
+        return;
+      }
+      if (file.size > 10 * 1024 * 1024) {
+        reject(new Error("Image must be smaller than 10 MB."));
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(new Error("Could not read this image file."));
+      reader.readAsDataURL(file);
+    });
+  },
 
-      const res = await apiClient.post<{ url: string }>("/assets", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-      return res.data.url;
-    } catch {
-      // Fallback to local Data URL if offline or network error
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("Could not read the selected image."));
-        reader.onerror = () => reject(new Error("Could not read the selected image."));
-        reader.readAsDataURL(file);
-      });
-    }
+  async readImageWithMetadata(file: File): Promise<LoadedImageResult> {
+    const dataUrl = await this.readImage(file);
+    return new Promise((resolve, reject) => {
+      const img = new window.Image();
+      img.onload = () => {
+        const w = Math.max(1, img.naturalWidth);
+        const h = Math.max(1, img.naturalHeight);
+        resolve({
+          dataUrl,
+          width: w,
+          height: h,
+          aspectRatio: Number((w / h).toFixed(3)),
+        });
+      };
+      img.onerror = () => reject(new Error("Could not decode this image."));
+      img.src = dataUrl;
+    });
   },
 };
