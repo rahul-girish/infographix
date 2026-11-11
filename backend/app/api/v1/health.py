@@ -19,6 +19,6 @@ def health_check(db: Session = Depends(get_db)):
     return {
         "status": "healthy" if db_status == "connected" else "degraded",
         "database": db_status,
-        "models": layout_pipeline.status(),
+        "inference_service": layout_pipeline.status(),
         "version": "2.0.0",
     }

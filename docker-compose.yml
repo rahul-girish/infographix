@@ -6,11 +6,12 @@ services:
     container_name: infographix_backend
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "${PORT:-8000}:8000"
     env_file:
       - backend/.env
     environment:
       - API_V1_STR=/api/v1
+      - PORT=8000
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/api/v1/health\")'"]
       interval: 15s

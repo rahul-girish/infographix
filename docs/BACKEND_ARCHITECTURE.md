@@ -42,18 +42,13 @@ backend/
 
 ---
 
-## 3. Inference Pipeline (`LayoutPipelineService`)
+## 3. Remote Inference Delegation (`LayoutPipelineService`)
 
-`backend/app/services/layout_pipeline.py` lazily loads artifacts from the repository root:
+`backend/app/services/layout_pipeline.py` delegates layout generation over HTTP to the standalone ClearML-backed `inference_service` configured via `INFERENCE_SERVICE_URL`:
 
-1. **Candidate Template Retrieval (`models/registry/poster_layout_retriever/v2.0.0/pipeline.joblib`)**:
-   - Converts `PosterGenerateRequest` (title, authors, orientation, columns, and content blocks with word counts, aspect ratios, and table dimensions) into a `PosterRequest` (`src/features/request_schema.py`).
-   - Queries `LayoutRetriever.retrieve_for_request(..., top_k=5, diversify=True)`.
-2. **Engine Selection (`engine`)**:
-   - **`adaptation` (default)**: Uses `LayoutAdapter` (`src/adaptation/layout_adapter.py`) + `data/processed/features/v1/elements.parquet` to solve a HiGHS linear program (`scipy.optimize.linprog`) guaranteeing non-overlapping, typography-aware bounding boxes.
-   - **`neural`**: Encodes user blocks into `[1, M, 18]` tensors (`UserContentItem`) and the top-1 retrieved template into `[1, K, 16]` tensors (`TemplateSlotItem`), then runs `TemplateConditionedLayoutModel` (`models/checkpoints/neural_layout/best_model.pt`).
-3. **Canvas Mapping**:
-   - Maps generated elements into Konva-compatible `PosterElement` dictionaries (`x`, `y`, `width`, `height`, styling, plus `sourceBlockId`, `semanticRole`, and `bboxNorm` provenance).
+1. Strips large client-side `imageDataUrl` blobs before sending `POST {INFERENCE_SERVICE_URL}/v1/layouts/generate` (retaining `aspectRatio` for layout geometry).
+2. Re-attaches any client figure images onto the returned `figure` Konva slots locally before returning `PosterDocument` to the frontend.
+3. Persists the sanitized input payload, engineered `request_features`, ClearML model provenance, `generated_layout`, and subsequent human edits (`edited_layout`) in Supabase PostgreSQL (`generation_runs`).
 
 ---
 

@@ -54,14 +54,24 @@ curl http://localhost:8000/api/v1/health
 
 ## 4. Separate Cloud Deployments (Monorepo)
 
-- **Frontend (Vercel / Netlify / Cloudflare Pages):**
-  - Root directory: `frontend`
-  - Build command: `npm run build`
-  - Output directory: `dist`
-  - Env var: `VITE_API_BASE_URL=https://<your-backend-domain>/api`
-- **Backend (Railway / Render / Fly.io / VPS):**
-  - Build using `backend/Dockerfile` with build context `.` (repo root)
-  - Env vars:
+Deploy the three services independently from this single repository:
+
+- **Inference Service (`inference_service/`) on Render (Docker):**
+  - See [`inference_service/README.md`](../inference_service/README.md) for ClearML & AWS S3 configuration.
+- **Application Backend (`backend/`) on Render (Docker):**
+  - **Language / Environment:** `Docker`
+  - **Root Directory:** `.`
+  - **Dockerfile Path:** `backend/Dockerfile`
+  - **Docker Build Context:** `.`
+  - **Health Check Path:** `/api/v1/health`
+  - **Env vars:**
     - `DATABASE_URL=<supabase-session-pooler-uri>`
-    - `CORS_ORIGINS=["https://<your-frontend-domain>"]`
+    - `INFERENCE_SERVICE_URL=https://<your-inference-service>.onrender.com`
     - `DEFAULT_ENGINE=adaptation`
+    - `CORS_ORIGINS=["https://<your-frontend-domain>"]`
+- **Frontend (`frontend/`) on Render Static Site / Vercel / Netlify:**
+  - **Root Directory:** `frontend`
+  - **Build Command:** `npm run build`
+  - **Publish / Output Directory:** `dist`
+  - **Rewrite rule (for `/editor/:runId` SPA routes):** `/* -> /index.html`
+  - **Env var:** `VITE_API_BASE_URL=https://<your-backend-domain>/api`
