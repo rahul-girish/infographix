@@ -435,7 +435,10 @@ class TestStageBNeuralLayout(unittest.TestCase):
             history = trainer.train()
 
             # 3. Verify all 8 individual loss components reported to ClearML
-            reported_titles = [call[1]["title"] for call in mock_logger.report_scalar.call_args_list]
+            reported_titles = [
+                call[0][0] if call[0] else call[1].get("title")
+                for call in mock_logger.report_scalar.call_args_list
+            ]
             expected_loss_titles = [
                 "Loss - Total",
                 "Loss - Box Regression",
