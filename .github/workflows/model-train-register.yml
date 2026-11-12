@@ -48,6 +48,7 @@ jobs:
     env:
       PYTHONPATH: .
       MPLCONFIGDIR: /tmp/matplotlib
+      UV_VENV_CLEAR: "1"
       CLEARML_API_ACCESS_KEY: ${{ secrets.CLEARML_API_ACCESS_KEY }}
       CLEARML_API_SECRET_KEY: ${{ secrets.CLEARML_API_SECRET_KEY }}
       CLEARML_API_HOST: https://api.clear.ml
@@ -61,7 +62,7 @@ jobs:
       INPUT_MIN_VAL_IOU: ${{ inputs.min_val_iou }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Verify ClearML credentials are configured
         run: |
@@ -96,7 +97,7 @@ jobs:
 
       - name: Install training dependencies
         run: |
-          uv venv
+          uv venv --clear .venv
           uv pip install -r requirements.txt
 
       - name: Train & evaluate neural layout model

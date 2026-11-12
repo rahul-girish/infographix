@@ -61,9 +61,10 @@ jobs:
       RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
       RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
       RENDER_SERVICE_URL: ${{ secrets.RENDER_SERVICE_URL }}
+      UV_VENV_CLEAR: "1"
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Validate inputs & ClearML credentials
         run: |
@@ -84,7 +85,7 @@ jobs:
 
       - name: Install CPU PyTorch & ClearML registry dependencies
         run: |
-          uv venv
+          uv venv --clear .venv
           uv pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.3.0"
           uv pip install -r inference_service/requirements.txt
 
