@@ -1,98 +1,75 @@
-# Infographix 📊
+# Infographix
 
-> **AI-Powered Scientific Poster Generation System**  
-> An automated ML platform for researchers, students, and academics to arrange user-provided content (text, figures, tables, captions, and author metadata) into structured, publication-grade scientific posters built on **SciPostLayout v2** (7,855 posters, 192,657 valid elements, 676,383 spatial relations).
+An end-to-end AI-powered platform for converting academic papers and technical documents into presentation-ready scientific posters and infographics.
 
 ---
 
 ## 🏗️ Architecture & Core Components
 
 1. **COCO & Poster Document Schemas (`src/schemas/coco.py`, `src/schemas/layout_document.py`)**:
-   - Canonical layout interchange format supporting HTML, SVG, and PDF rendering (`src/rendering/`).
-2. **Multi-Table Feature Engineering & Candidate Retrieval (`src/features/`, `src/models/layout_retrieval.py`)**:
-   - Extracts poster, element, and spatial relation tables (`data/processed/features/v2/`).
-   - Macro-level layout archetype clustering (`poster_layout_archetypes` v2.0.0) and MMR-diversified nearest-neighbor template retrieval (`poster_layout_retriever` v2.0.0).
-3. **Anti-Leakage Neural Training Dataset (`src/neural_layout/dataset.py`)**:
-   - Extracts genuine PDF text via `/usr/bin/pdftotext -bbox-layout` and intrinsic image aspect ratios via `/usr/bin/pdfimages -list`.
-   - Explicitly represents missing metadata (`has_text_length=False`, `has_aspect_ratio=False`) without bounding-box area estimation, deterministically decouples input order from reading order, and excludes `target_poster_id` during retrieval.
-4. **Template-Conditioned Neural Layout Model (`src/neural_layout/`)**:
+   - Canonical layout interchange format connecting PDF document extraction, template libraries, and the frontend visual canvas editor.
+   - Full HTML, SVG, and PDF rendering support (`src/rendering/`).
+2. **DBSCAN Clustering & Multi-Table Feature Engineering (`src/clustering/dbscan_clustering.py`, `src/features/`, `src/models/layout_retrieval.py`)**:
+   - **Macro-level**: Discovers coherent layout archetypes (DBSCAN + PCA-15 / MMR-diversified template retrieval) without forcing outliers into arbitrary clusters.
+   - **Micro-level**: 2D anisotropic spatial DBSCAN groups scattered text fragments into columns and pairs figures with captions.
+   - Multi-table feature extraction for posters, elements, and spatial relations (`data/processed/features/`).
+3. **Template-Conditioned Neural Layout Model (`src/neural_layout/`)**:
    - **`ContentEncoder`**: Set Transformer encoding variable content elements ($M \times 18$).
-   - **`TemplateEncoder`**: Set Transformer encoding retrieved conditioning template slots ($K \times 16$).
-   - **`LayoutDecoder`**: Cross-attention + inter-element self-attention predicting normalized bounding boxes, column assignments, continuous reading-order scores, and macro column counts.
-   - **Multi-Task Objective (`src/neural_layout/losses.py`)**: SmoothL1 + GIoU regression, hard canvas-boundary and selective overlap penalties, column cross-entropy, masked intrinsic aspect-ratio preservation, reading-order ranking, and macro column planning.
-5. **Experiment Tracking — ClearML Cloud (`src/neural_layout/trainer.py`)**:
-   - Tracks all 8 loss components, validation alignment/constraint metrics, git provenance, hyperparameters, and 3-panel layout visualizations in the shared `Infographix` ClearML workspace.
-   - Local CPU training (`scripts/train_neural_layout_local.py`) and turnkey Google Colab GPU notebook (`notebooks/04_neural_layout_model.ipynb`).
-6. **Model Registry — ClearML Native Registry (`src/registry/clearml_registry.py`)**:
-   - Versioned, immutable model bundles (`OutputModel`, `InputModel`, `Model.query_models`) containing weights-only PyTorch checkpoints, architecture configs, feature/preprocessing schemas, runtime metadata, and SHA-256 verified manifests.
-   - Lifecycle tags (`candidate`, `staging`, `production`, `archived`) managed independently of ClearML `Published` flags.
-   - See [`docs/NEURAL_LAYOUT_AND_CLEARML_REGISTRY.md`](docs/NEURAL_LAYOUT_AND_CLEARML_REGISTRY.md) for full technical specifications.
+   - **`TemplateEncoder`**: Set Transformer encoding retrieved conditioning template slots ($K \times 14$).
+   - **`LayoutDecoder`**: Autoregressive decoder with coordinate regression and overlap/boundary penalties.
+4. **ClearML Model Registry (`src/registry/clearml_registry.py` & `src/registry/model_registry.py`)**:
+   - **ClearML Native Model Registry**: Production artifact versioning, SHA-256 checksum verification, hyperparameter & metric tracking, and lifecycle stage management (`production`, `staging`, `candidate`, `archived`).
+   - **Local Dual-Mirror Fallback**: Zero-crash offline guarantee if ClearML credentials or network are unavailable.
+5. **Experiment Tracking & CI/CD**:
+   - Experiment tracking powered by **ClearML** and **Aim**.
+   - Automated GitHub Actions workflows for continuous integration (`model-ci.yml`), training & registration (`model-train-register.yml`), and production promotion to Render (`model-cd-promote.yml`).
 
 ---
 
-## 🚀 Quickstart: Training & ClearML Model Registry
+## 🚀 Quickstart: Using the ClearML Production Model Registry
 
-### 1. ClearML Authentication
-Configure ClearML Cloud locally once:
+### 1. Configure ClearML (One-time setup)
+If using ClearML Community Cloud (`https://app.clear.ml`):
 ```bash
-.venv/bin/clearml-init
+# Interactive setup: paste your access key & secret from app.clear.ml/settings
+clearml-init
 ```
-On Google Colab, store `CLEARML_API_ACCESS_KEY` and `CLEARML_API_SECRET_KEY` in **Colab Secrets**; [`notebooks/04_neural_layout_model.ipynb`](notebooks/04_neural_layout_model.ipynb) authenticates automatically without hardcoded credentials.
-
-### 2. Run Training (Local CPU or Colab GPU)
+Or set environment variables in your `.env` or shell:
 ```bash
-# Short local CPU validation run reported to ClearML Cloud
-.venv/bin/python -u scripts/train_neural_layout_local.py --epochs 3 --train-samples 16 --val-samples 8
+export CLEARML_API_ACCESS_KEY="your_access_key"
+export CLEARML_API_SECRET_KEY="your_secret_key"
 ```
-Local checkpoints are written to `models/checkpoints/neural_layout/` (`best_model.pt` and `latest_checkpoint.pt`).
+*(If no credentials are provided, ClearML runs in offline mode automatically with zero errors).*
 
-### 3. Register a Model Version in ClearML
+### 2. Load the Active Production Model in FastAPI / Python
 ```python
-from src.registry.clearml_registry import register_model
+from src.registry.clearml_registry import ClearMLModelRegistry
 
-model_id = register_model(
-    checkpoint_path="models/checkpoints/neural_layout/best_model.pt",
-    training_task_id="8cd6cb755a084535a7bba3ae551e3e20",
-    semantic_version="0.1.0",
-    dataset_identifier="SciPostLayout v2.0.0",
-    lifecycle_status="candidate",
-)
-```
-Or run the full end-to-end registration and reproducibility verification script:
-```bash
-.venv/bin/python -u scripts/register_and_verify_clearml_model.py
+registry = ClearMLModelRegistry(project_name="Infographix")
+
+# Load active production model & preprocessor (fetches from ClearML or local cache)
+model, preprocessor, meta = registry.load_production_model("poster_layout_clusterer")
+
+print(f"Loaded: {meta.get('name', 'poster_layout_clusterer')}")
+print(f"Source: {meta.get('source')}")
 ```
 
-### 4. Query & Load a Registered Model (Inference / Downstream Services)
+### 3. Load Neural Layout Generator from ClearML
 ```python
-from src.registry.clearml_registry import (
-    load_registered_model,
-    query_registered_models,
-    set_model_lifecycle_status,
-)
+from src.registry.clearml_registry import load_registered_model
 
-# List registered models in Infographix ClearML workspace
-models = query_registered_models(semantic_version="0.1.0")
-print(models)
-
-# Download verified bundle from ClearML Cloud and reconstruct PyTorch model
+# Load candidate or production neural layout model by ClearML ID or semantic version
 model, manifest = load_registered_model(
-    semantic_version="0.1.0",   # or exact ClearML model_id="6a2c2d4897384aaf8aa59c7c66a86bfb"
+    model_id="YOUR_CLEARML_MODEL_ID",
     device="cpu",
     return_manifest=True,
 )
-# Returns TemplateConditionedLayoutModel in .eval() mode with SHA-256 verified weights
 ```
 
-### 5. Run Unit & Integration Tests
+### 4. Run Unit & Integration Tests
 ```bash
-.venv/bin/python -m unittest \
-  src/test_dataset_stage_a.py \
-  src/test_neural_model_stage_b.py \
-  src/test_clearml_registry.py \
-  src/test_v2_pipeline.py \
-  src/test_stage3_pipeline.py
-.venv/bin/python src/test_model_registry.py
+python -m unittest src/test_clearml_registry.py -v
+python src/test_model_registry.py
 ```
 
 ---
@@ -117,82 +94,22 @@ cd frontend && npm run dev
 
 ---
 
-## Setup and Environment
+## 🛠️ Setup and Environment
 
-Operating System: Ubuntu 24.04 (On Windows use WSL2).
+Operating System: Ubuntu 24.04 (On Windows use WSL2 or native PowerShell).
 
-Run the following command in PowerShell as an administrator:
+### 1. Python Environment Setup
 ```bash
-wsl --install -d Ubuntu-24.04
-```
-
-Install the following in your Ubuntu environment:
-
-Install Python and Poppler PDF utilities (`pdftotext`, `pdfimages`):
-```bash
-sudo apt install python3.12 poppler-utils
-```
-
-Install `uv` (`uv` is the Python package manager used in this project):
-```bash
+# Install uv (fast Python package manager)
 curl -LsSf https://astral.sh/uv/install.sh | sh
-```
 
-Create a Python virtual environment and activate it.
-**Always make sure your venv is activated when running code.**
-```bash
+# Create a virtual environment and activate it
 uv venv
-source .venv/bin/activate
-```
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-Install dependencies:
-```bash
+# Install dependencies
 uv pip install -r requirements.txt
 ```
 
-Download and extract the SciPostLayout v2 dataset (requires ~66 GB total free space):
-```bash
-uv pip install huggingface_hub
-mkdir -p data/raw/scipostlayout data/interim
-hf download omron-sinicx/scipostlayout_v2 --repo-type dataset --local-dir data/raw/scipostlayout
-unzip data/raw/scipostlayout/scipostlayout.zip -d data/interim/scipostlayout
-```
-
-Register the virtual environment as a Jupyter kernel:
-```bash
-uv run ipython kernel install --user --env VIRTUAL_ENV $(pwd)/.venv --name=infographix-venv
-```
-
-Start JupyterLab in a separate terminal **outside the venv**:
-```bash
-jupyter lab
-```
-Open a notebook, set the kernel to `infographix-venv`, and execute cells.
-
-**Before every commit, verify `requirements.txt` is up to date inside the activated `.venv`:**
-```bash
-uv pip freeze > requirements.txt
-```
-
----
-
-## DVC Setup Notes
-
-Note that all DVC commands should be run from within the virtual environment.
-
-Initialize DVC:
-```bash
-dvc init
-```
-
-Configure Google Drive Remote:
-```bash
-dvc remote add --default gdrive gdrive://folder_id
-dvc remote list
-```
-
-Configure Google Drive OAuth client credentials:
-```bash
-dvc remote modify gdrive --local gdrive_client_id 'client_id'
-dvc remote modify gdrive --local gdrive_client_secret 'client_secret'
-```
+### 2. Custom DVC / MyDVC Setup Notes
+Dataset versions and file manifests are tracked under `.mydvc/manifests/` (e.g. `.mydvc/manifests/v0.manifest`, `v1.manifest`, `v2.manifest`), keeping Git repository size minimal while tracking full SHA-256 integrity for datasets in Google Drive.

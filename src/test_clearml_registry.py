@@ -682,5 +682,56 @@ class TestClearMLRetrieverRegistryUnit(unittest.TestCase):
                 self.assertEqual(mig_id, "migrated_ret_id")
 
 
+
+
+class TestClearMLModelRegistryV1(unittest.TestCase):
+    """Unit test for v1 ClearMLModelRegistry dual-mirror and offline lifecycle."""
+
+    def test_clearml_registry_offline_lifecycle(self):
+        import shutil
+        import numpy as np
+        from sklearn.dummy import DummyClassifier
+        from src.registry.clearml_registry import ClearMLModelRegistry
+
+        temp_dir = Path(tempfile.mkdtemp())
+        try:
+            registry = ClearMLModelRegistry(
+                project_name="Infographix-Tests",
+                offline=True,
+                local_fallback_root=temp_dir,
+            )
+
+            dummy = DummyClassifier(strategy="constant", constant=0)
+            dummy.fit(np.zeros((10, 4)), np.zeros(10))
+
+            res = registry.register_model(
+                model_name="test_clearml_clusterer",
+                version="v1.0.0",
+                model_object=dummy,
+                preprocessor=None,
+                feature_schema_columns=["f1", "f2", "f3", "f4"],
+                hyperparameters={"eps": 4.8},
+                metrics={"train_silhouette": 0.24},
+                stage="production",
+                description="ClearML Test Clusterer",
+                tags=["test", "unit-test"],
+            )
+
+            self.assertEqual(res["model_name"], "test_clearml_clusterer")
+            self.assertEqual(res["version"], "v1.0.0")
+            self.assertEqual(res["stage"], "production")
+            self.assertTrue(Path(res["local_path"]).exists())
+
+            model, prep, meta = registry.load_production_model("test_clearml_clusterer")
+            self.assertIsNotNone(model)
+            pred = model.predict(np.zeros((2, 4)))
+            self.assertEqual(list(pred), [0, 0])
+
+            models = registry.list_models()
+            self.assertIn("test_clearml_clusterer", models)
+
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
 if __name__ == "__main__":
     unittest.main()
