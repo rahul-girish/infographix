@@ -1,0 +1,32 @@
+services:
+  inference:
+    build:
+      context: ..
+      dockerfile: inference_service/Dockerfile
+    container_name: infographix_inference
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8001}:8001"
+    env_file:
+      - .env
+    environment:
+      - PORT=8001
+    volumes:
+      - inference_data_cache:/app/data_cache
+      - clearml_cache:/home/appuser/.clearml
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8001/health/ready')",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+volumes:
+  inference_data_cache:
+  clearml_cache:

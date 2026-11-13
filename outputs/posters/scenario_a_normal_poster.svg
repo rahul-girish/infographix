@@ -1,0 +1,73 @@
+<svg width="1920" height="1350" viewBox="0 0 1920 1350" xmlns="http://www.w3.org/2000/svg" font-family="Inter, -apple-system, sans-serif">
+<defs>
+  <style type="text/css">
+    .title-text { font-family: Inter, sans-serif; font-weight: 800; fill: #0f172a; text-anchor: middle; }
+    .authors-text { font-family: Inter, sans-serif; font-weight: 500; fill: #475569; text-anchor: middle; }
+    .section-text { font-family: Inter, sans-serif; font-weight: 700; fill: #1e3a8a; letter-spacing: 0.5px; }
+    .body-text { font-family: Inter, sans-serif; font-weight: 400; fill: #334155; }
+    .caption-text { font-family: Inter, sans-serif; font-style: italic; fill: #64748b; }
+    .table-header { font-family: Inter, sans-serif; font-weight: 600; fill: #1e293b; }
+    .table-cell { font-family: Inter, sans-serif; font-weight: 400; fill: #334155; }
+  </style>
+</defs>
+<rect id="background" width="1920" height="1350" fill="#ffffff" />
+<g id="layer-content">
+<text class="title-text" x="763.5" y="96.1" font-size="63.8px">Scientific Poster Title</text>
+<text class="authors-text" x="828.1" y="159.7" font-size="29.3px">Author Name, Co-Author Name — Research Institute</text>
+<rect x="61.0" y="218.2" width="5.0" height="35.1" rx="2" fill="#2563eb" />
+<text class="section-text" x="74.0" y="246.9" font-size="31.9px">SECTION</text>
+<line x1="61.0" y1="253.5" x2="669.8" y2="253.5" stroke="#e2e8f0" stroke-width="1.5" />
+<text class="body-text" font-size="21.3px"><tspan x="65.0" y="284.8">[Text Content Block]</tspan></text>
+<rect x="61.0" y="348.8" width="5.0" height="35.1" rx="2" fill="#2563eb" />
+<text class="section-text" x="74.0" y="377.5" font-size="31.9px">SECTION</text>
+<line x1="61.0" y1="387.0" x2="669.8" y2="387.0" stroke="#e2e8f0" stroke-width="1.5" />
+<text class="body-text" font-size="21.3px"><tspan x="65.0" y="418.4">[Text Content Block]</tspan></text>
+<rect x="61.0" y="496.3" width="5.0" height="35.1" rx="2" fill="#2563eb" />
+<text class="section-text" x="74.0" y="525.1" font-size="31.9px">SECTION</text>
+<line x1="61.0" y1="534.5" x2="669.8" y2="534.5" stroke="#e2e8f0" stroke-width="1.5" />
+<rect id="card-b_fig1" x="61.0" y="544.6" width="608.8" height="435.0" rx="5" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1" />
+<circle cx="295.8" cy="762.1" r="69.6" fill="#38bdf8" opacity="0.25" />
+<circle cx="421.1" cy="741.3" r="76.6" fill="#0284c7" opacity="0.18" />
+<path d="M 182.8 849.1 Q 365.4 631.6 548.1 805.6" fill="none" stroke="#0284c7" stroke-width="2.5" />
+<text x="365.4" y="967.6" font-size="12px" fill="#64748b" font-weight="600" text-anchor="middle">[Figure Content Block]</text>
+<rect id="card-b_cap1" x="61.0" y="990.4" width="608.8" height="33.0" rx="5" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1" />
+<rect x="61.0" y="990.4" width="3" height="33.0" rx="1" fill="#cbd5e1" />
+<text class="caption-text" font-size="18.0px"><tspan x="69.0" y="1008.4">[Caption Content Block]</tspan></text>
+<rect id="card-b_tab1" x="61.0" y="1039.7" width="608.8" height="84.4" rx="5" fill="#ffffff" stroke="#cbd5e1" stroke-width="1" />
+<rect x="61.0" y="1039.7" width="608.8" height="21.1" fill="#f1f5f9" />
+<line x1="61.0" y1="1060.8" x2="669.8" y2="1060.8" stroke="#cbd5e1" stroke-width="1.5" />
+<text class="table-header" x="67.0" y="1054.5" font-size="11px">Parameter</text>
+<text class="table-header" x="219.2" y="1054.5" font-size="11px">Observed</text>
+<text class="table-header" x="371.4" y="1054.5" font-size="11px">Baseline</text>
+<text class="table-header" x="523.6" y="1054.5" font-size="11px">p-val</text>
+<line x1="61.0" y1="1081.9" x2="669.8" y2="1081.9" stroke="#f1f5f9" stroke-width="1" />
+<text class="table-cell" x="67.0" y="1075.6" font-size="10.5px">Factor A</text>
+<text class="table-cell" x="219.2" y="1075.6" font-size="10.5px">87.4%</text>
+<text class="table-cell" x="371.4" y="1075.6" font-size="10.5px">72.1%</text>
+<text class="table-cell" x="523.6" y="1075.6" font-size="10.5px">0.003</text>
+<rect x="61.0" y="1142.5" width="5.0" height="35.1" rx="2" fill="#2563eb" />
+<text class="section-text" x="74.0" y="1171.2" font-size="31.9px">SECTION</text>
+<line x1="61.0" y1="1177.8" x2="669.8" y2="1177.8" stroke="#e2e8f0" stroke-width="1.5" />
+<text class="body-text" font-size="21.3px"><tspan x="65.0" y="1209.2">[Text Content Block]</tspan></text>
+<rect id="card-b_fig2" x="669.8" y="216.0" width="608.8" height="466.5" rx="5" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1" />
+<circle cx="899.6" cy="449.3" r="74.6" fill="#38bdf8" opacity="0.25" />
+<circle cx="1034.0" cy="426.9" r="82.1" fill="#0284c7" opacity="0.18" />
+<path d="M 791.6 542.6 Q 974.3 309.3 1156.9 495.9" fill="none" stroke="#0284c7" stroke-width="2.5" />
+<text x="974.3" y="670.5" font-size="12px" fill="#64748b" font-weight="600" text-anchor="middle">[Figure Content Block]</text>
+<rect id="card-b_cap2" x="669.8" y="693.3" width="608.8" height="35.6" rx="5" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1" />
+<rect x="669.8" y="693.3" width="3" height="35.6" rx="1" fill="#cbd5e1" />
+<text class="caption-text" font-size="18.0px"><tspan x="677.8" y="711.3">[Caption Content Block]</tspan></text>
+<rect x="669.8" y="750.2" width="5.0" height="35.1" rx="2" fill="#2563eb" />
+<text class="section-text" x="682.8" y="778.9" font-size="31.9px">SECTION</text>
+<line x1="669.8" y1="788.4" x2="1278.7" y2="788.4" stroke="#e2e8f0" stroke-width="1.5" />
+<rect id="card-b_fig3" x="669.8" y="798.5" width="608.8" height="451.1" rx="5" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1" />
+<circle cx="902.1" cy="1024.1" r="72.2" fill="#38bdf8" opacity="0.25" />
+<circle cx="1032.0" cy="1002.4" r="79.4" fill="#0284c7" opacity="0.18" />
+<path d="M 791.6 1114.3 Q 974.3 888.7 1156.9 1069.2" fill="none" stroke="#0284c7" stroke-width="2.5" />
+<text x="974.3" y="1237.6" font-size="12px" fill="#64748b" font-weight="600" text-anchor="middle">[Figure Content Block]</text>
+<rect id="card-b_cap3" x="669.8" y="1260.4" width="608.8" height="35.6" rx="5" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1" />
+<rect x="669.8" y="1260.4" width="3" height="35.6" rx="1" fill="#cbd5e1" />
+<text class="caption-text" font-size="18.0px"><tspan x="677.8" y="1278.4">[Caption Content Block]</tspan></text>
+<text class="body-text" font-size="21.3px"><tspan x="1282.7" y="237.3">[Text Content Block]</tspan></text>
+</g>
+</svg>

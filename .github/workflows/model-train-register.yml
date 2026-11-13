@@ -1,0 +1,168 @@
+name: Train & Register Candidate Model
+
+on:
+  workflow_dispatch:
+    inputs:
+      semantic_version:
+        description: "New ClearML semantic version (e.g. 0.2.0)"
+        required: true
+        type: string
+      epochs:
+        description: "Training epochs"
+        required: true
+        default: "10"
+        type: string
+      train_samples:
+        description: "Max training samples"
+        required: true
+        default: "32"
+        type: string
+      val_samples:
+        description: "Max validation samples"
+        required: true
+        default: "12"
+        type: string
+      dataset_identifier:
+        description: "Dataset provenance identifier"
+        required: true
+        default: "SciPostLayout v2.0.0"
+        type: string
+      min_val_iou:
+        description: "Minimum validation IoU gate required for registration"
+        required: true
+        default: "0.25"
+        type: string
+      runner_label:
+        description: "Runner target (use self-hosted for GPU/local dataset)"
+        required: true
+        default: "ubuntu-latest"
+        type: choice
+        options:
+          - ubuntu-latest
+          - self-hosted
+
+jobs:
+  train-and-register:
+    name: Train, Gate & Register in ClearML
+    runs-on: ${{ inputs.runner_label }}
+    env:
+      PYTHONPATH: .
+      MPLCONFIGDIR: /tmp/matplotlib
+      UV_VENV_CLEAR: "1"
+      CLEARML_API_ACCESS_KEY: ${{ secrets.CLEARML_API_ACCESS_KEY }}
+      CLEARML_API_SECRET_KEY: ${{ secrets.CLEARML_API_SECRET_KEY }}
+      CLEARML_API_HOST: https://api.clear.ml
+      CLEARML_WEB_HOST: https://app.clear.ml
+      CLEARML_FILES_HOST: https://files.clear.ml
+      INPUT_SEMANTIC_VERSION: ${{ inputs.semantic_version }}
+      INPUT_EPOCHS: ${{ inputs.epochs }}
+      INPUT_TRAIN_SAMPLES: ${{ inputs.train_samples }}
+      INPUT_VAL_SAMPLES: ${{ inputs.val_samples }}
+      INPUT_DATASET_IDENTIFIER: ${{ inputs.dataset_identifier }}
+      INPUT_MIN_VAL_IOU: ${{ inputs.min_val_iou }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Verify ClearML credentials are configured
+        run: |
+          if [ -z "$CLEARML_API_ACCESS_KEY" ] || [ -z "$CLEARML_API_SECRET_KEY" ]; then
+            echo "::error::CLEARML_API_ACCESS_KEY and CLEARML_API_SECRET_KEY secrets must be set."
+            exit 1
+          fi
+
+      - name: Verify training data and retriever registry availability
+        run: |
+          if [ ! -f "data/processed/features/v2/posters.parquet" ] || [ ! -f "data/processed/features/v2/elements.parquet" ]; then
+            echo "::error::Missing data/processed/features/v2/*.parquet (gitignored). Run on a self-hosted runner with the dataset or add a data-pull step (e.g. minidvc/S3) before training."
+            exit 1
+          fi
+          if [ ! -d "models/registry" ]; then
+            echo "::error::Missing models/registry/ (gitignored) required by scripts/train_neural_layout_local.py."
+            exit 1
+          fi
+
+      - name: Install system dependencies (Poppler for PDF metadata extraction)
+        if: runner.os == 'Linux'
+        run: |
+          if ! command -v pdftotext >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y poppler-utils
+          fi
+
+      - name: Set up Python & uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install training dependencies
+        run: |
+          uv venv --clear .venv
+          uv pip install -r requirements.txt
+
+      - name: Train & evaluate neural layout model
+        run: |
+          .venv/bin/python -u scripts/train_neural_layout_local.py \
+            --epochs "$INPUT_EPOCHS" \
+            --train-samples "$INPUT_TRAIN_SAMPLES" \
+            --val-samples "$INPUT_VAL_SAMPLES"
+
+      - name: Evaluate quality gate & register candidate model in ClearML
+        run: |
+          .venv/bin/python - <<'EOF'
+          import json
+          import os
+          from pathlib import Path
+          import torch
+          from clearml import Task
+          from src.registry.clearml_registry import (
+              load_registered_model,
+              register_model,
+          )
+
+          Task.set_credentials(
+              api_host=os.environ["CLEARML_API_HOST"],
+              web_host=os.environ["CLEARML_WEB_HOST"],
+              files_host=os.environ["CLEARML_FILES_HOST"],
+              key=os.environ["CLEARML_API_ACCESS_KEY"],
+              secret=os.environ["CLEARML_API_SECRET_KEY"],
+          )
+
+          summary = json.loads(Path("outputs/neural_layout_eval/eval_summary.json").read_text(encoding="utf-8"))
+          ckpt_path = Path("models/checkpoints/neural_layout/best_model.pt")
+          ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+
+          val_iou = float(ckpt.get("metrics", {}).get("val_iou_mean", 0.0))
+          min_iou = float(os.environ["INPUT_MIN_VAL_IOU"])
+          print(f"Checkpoint val_iou_mean={val_iou:.6f} (gate >= {min_iou:.6f})")
+          if val_iou < min_iou:
+              raise SystemExit(f"Quality gate failed: val_iou_mean {val_iou:.6f} < {min_iou:.6f}")
+
+          model_id = register_model(
+              checkpoint_path=ckpt_path,
+              training_task_id=summary["clearml_task_id"],
+              semantic_version=os.environ["INPUT_SEMANTIC_VERSION"],
+              dataset_identifier=os.environ["INPUT_DATASET_IDENTIFIER"],
+              lifecycle_status="candidate",
+              comment=f"Registered by GitHub Actions run {os.environ.get('GITHUB_RUN_ID', '')}",
+          )
+
+          # Round-trip SHA-256 & model reconstruction verification from ClearML Cloud
+          _, manifest = load_registered_model(
+              model_id=model_id,
+              device="cpu",
+              force_download=True,
+              return_manifest=True,
+          )
+
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as fh:
+                  fh.write("## ClearML Candidate Registration\n\n")
+                  fh.write(f"- **ClearML Model ID:** `{model_id}`\n")
+                  fh.write(f"- **Semantic Version:** `{manifest.get('semantic_version', os.environ['INPUT_SEMANTIC_VERSION'])}`\n")
+                  fh.write(f"- **Training Task ID:** `{summary['clearml_task_id']}`\n")
+                  fh.write(f"- **Validation IoU:** `{val_iou:.6f}`\n")
+                  fh.write("- **Lifecycle Stage:** `candidate`\n")
+          print(f"Registered and verified candidate ClearML model_id={model_id}")
+          EOF

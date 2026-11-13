@@ -1,30 +1,35 @@
-# Infographix 📊
+# Infographix
 
-> **AI-Powered Technical Poster and Infographic Generator**  
-> An automated platform for students, researchers, and academics to transform research papers into customizable, publication-grade technical posters.
+An end-to-end AI-powered platform for converting academic papers and technical documents into presentation-ready scientific posters and infographics.
 
 ---
 
 ## 🏗️ Architecture & Core Components
 
-1. **COCO Data Schema (`src/schemas/coco.py`)**:
-   - Universal data interchange format connecting PDF document extraction, template libraries, and the frontend visual canvas editor.
-2. **DBSCAN Layout Clustering (`src/clustering/dbscan_clustering.py`)**:
-   - **Macro-level**: PCA (15 components) + DBSCAN discovers coherent layout archetypes and isolates irregular designs as noise (`-1`).
+1. **COCO & Poster Document Schemas (`src/schemas/coco.py`, `src/schemas/layout_document.py`)**:
+   - Canonical layout interchange format connecting PDF document extraction, template libraries, and the frontend visual canvas editor.
+   - Full HTML, SVG, and PDF rendering support (`src/rendering/`).
+2. **DBSCAN Clustering & Multi-Table Feature Engineering (`src/clustering/dbscan_clustering.py`, `src/features/`, `src/models/layout_retrieval.py`)**:
+   - **Macro-level**: Discovers coherent layout archetypes (DBSCAN + PCA-15 / MMR-diversified template retrieval) without forcing outliers into arbitrary clusters.
    - **Micro-level**: 2D anisotropic spatial DBSCAN groups scattered text fragments into columns and pairs figures with captions.
-3. **Experiment Tracking**:
-   - Tracked using **Aim** (with local JSON fallback via `src/tracking/tracker.py`).
-4. **Model Registry (`src/registry/clearml_registry.py` & `src/registry/model_registry.py`)**:
-   - **ClearML Model Registry**: Production artifact versioning, hyperparameter & metric tracking, and stage management (`production`, `staging`, `archived`) with remote cloud storage and web UI.
-   - **Local File-based Fallback**: Zero-crash offline guarantee if ClearML credentials or network are unavailable.
-   - Currently registered in production: `poster_layout_clusterer` (`v1.0.0` / `v1.1.0-clearml`).
+   - Multi-table feature extraction for posters, elements, and spatial relations (`data/processed/features/`).
+3. **Template-Conditioned Neural Layout Model (`src/neural_layout/`)**:
+   - **`ContentEncoder`**: Set Transformer encoding variable content elements ($M \times 18$).
+   - **`TemplateEncoder`**: Set Transformer encoding retrieved conditioning template slots ($K \times 14$).
+   - **`LayoutDecoder`**: Autoregressive decoder with coordinate regression and overlap/boundary penalties.
+4. **ClearML Model Registry (`src/registry/clearml_registry.py` & `src/registry/model_registry.py`)**:
+   - **ClearML Native Model Registry**: Production artifact versioning, SHA-256 checksum verification, hyperparameter & metric tracking, and lifecycle stage management (`production`, `staging`, `candidate`, `archived`).
+   - **Local Dual-Mirror Fallback**: Zero-crash offline guarantee if ClearML credentials or network are unavailable.
+5. **Experiment Tracking & CI/CD**:
+   - Experiment tracking powered by **ClearML** and **Aim**.
+   - Automated GitHub Actions workflows for continuous integration (`model-ci.yml`), training & registration (`model-train-register.yml`), and production promotion to Render (`model-cd-promote.yml`).
 
 ---
 
 ## 🚀 Quickstart: Using the ClearML Production Model Registry
 
 ### 1. Configure ClearML (One-time setup)
-If using the free ClearML Community Cloud (`https://app.clear.ml`):
+If using ClearML Community Cloud (`https://app.clear.ml`):
 ```bash
 # Interactive setup: paste your access key & secret from app.clear.ml/settings
 clearml-init
@@ -47,124 +52,64 @@ model, preprocessor, meta = registry.load_production_model("poster_layout_cluste
 
 print(f"Loaded: {meta.get('name', 'poster_layout_clusterer')}")
 print(f"Source: {meta.get('source')}")
-
-# Run inference on extracted paper features (92-column vector)
-scaled_features = preprocessor.transform(raw_features)
-cluster_id = model.predict(scaled_features)
-# cluster_id = 0, 1... (assigned archetype) or -1 (noise/outlier)
 ```
 
-### 3. Register / Publish a Model to ClearML
-```bash
-python src/registry/register_clearml_production_model.py
-```
-
-### 4. Inspect Registered Models
+### 3. Load Neural Layout Generator from ClearML
 ```python
-from src.registry.clearml_registry import ClearMLModelRegistry
+from src.registry.clearml_registry import load_registered_model
 
-registry = ClearMLModelRegistry()
-print(registry.list_models())
+# Load candidate or production neural layout model by ClearML ID or semantic version
+model, manifest = load_registered_model(
+    model_id="YOUR_CLEARML_MODEL_ID",
+    device="cpu",
+    return_manifest=True,
+)
 ```
 
-### 5. Run Live End-to-End Demo
+### 4. Run Unit & Integration Tests
 ```bash
-python demo_live_pipeline.py
-```
-
-### 6. Run Unit Tests
-```bash
-python -c "
-import src.test_coco_dbscan as t1
-import src.test_model_registry as t2
-import src.test_clearml_registry as t3
-t1.test_coco_data_models_and_validation()
-t1.test_convert_extracted_document_to_coco()
-t1.test_canvas_to_coco_conversion()
-t1.test_poster_layout_dbscan_clustering()
-t1.test_spatial_block_dbscan_and_pairing()
-t2.test_model_registry_lifecycle()
-t3.test_clearml_registry_offline_lifecycle()
-print('All tests passed successfully!')
-"
+python -m unittest src/test_clearml_registry.py -v
+python src/test_model_registry.py
 ```
 
 ---
 
-## Setup and Environment
+## 📚 Additional Documentation
 
-Operating System: Ubuntu 24.04 (On Windows use WSL2).
+- [`docs/NEURAL_LAYOUT_AND_CLEARML_REGISTRY.md`](docs/NEURAL_LAYOUT_AND_CLEARML_REGISTRY.md) — Stage A/B Neural Layout pipeline, ClearML Cloud tracking, and ClearML Native Model Registry handover guide.
+- [`docs/FEATURE_ENGINEERING_AND_MODELING_V2.md`](docs/FEATURE_ENGINEERING_AND_MODELING_V2.md) — Multi-table feature engineering & v2 retrieval pipeline.
+- [`docs/STAGE3_ADAPTATION_AND_GENERATION.md`](docs/STAGE3_ADAPTATION_AND_GENERATION.md) — Layout adaptation benchmarks & rendering formats.
+- [`docs/BACKEND_ARCHITECTURE.md`](docs/BACKEND_ARCHITECTURE.md) & [`docs/BACKEND_API_SPECIFICATION.md`](docs/BACKEND_API_SPECIFICATION.md) — Streamlined FastAPI inference & MLOps telemetry service (`POST /api/v1/generate`, `/runs`, `/export/pdf`).
+- [`docs/DATABASE_DESIGN.md`](docs/DATABASE_DESIGN.md) — Supabase PostgreSQL `generation_runs` schema for storing raw inputs, model outputs, and human edits.
+- [`docs/FRONTEND_ARCHITECTURE.md`](docs/FRONTEND_ARCHITECTURE.md) & [`docs/DEPLOYMENT_GUIDE.md`](docs/DEPLOYMENT_GUIDE.md) — Minimal React + Konva input/editor UI, PNG/PDF export, and Supabase deployment guide.
 
-Run the following command in powershell as an administrator:
+### Running the Web App (Model Testing & Data Collection)
 ```bash
-wsl --install -d Ubuntu-24.04
+# 1. Start FastAPI backend (loads LayoutRetriever + LayoutAdapter / Neural model)
+PYTHONPATH=. .venv/bin/uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
+
+# 2. Start Vite + React frontend
+cd frontend && npm run dev
 ```
 
-Install the following in your Ubuntu environment:
+---
 
-Install python
-```bash
-sudo apt install python3.12
-```
+## 🛠️ Setup and Environment
 
-Install `uv`. `uv` is a package manager for python
-```bash
-curl LsSf https://astral.sh/uv/0.13.0/install.sh | sh
-```
+Operating System: Ubuntu 24.04 (On Windows use WSL2 or native PowerShell).
 
-Create a python virtual environment and activate it.
-**Always make sure your venv is activated when you are running code.**
+### 1. Python Environment Setup
 ```bash
+# Install uv (fast Python package manager)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Create a virtual environment and activate it
 uv venv
-source .venv/bin/activate
-```
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-Install HuggingFace CLI
-```bash
-uv pip install huggingface_hub
-```
-
-Install DVC
-```bash
-uv pip install dvc dvc-gdrive
-```
-
-Create a new directory and download the dataset. You will need at least 33 GB of free space.
-```bash
-mkdir data/raw/scipostlayout
-hf download omron-sinicx/scipostlayout_v2 --repo-type dataset --local-dir data/raw/scipostlayout
-```
-
-Unzip the dataset. You will need another 33 GB of space
-```bash
-mkdir data/interim
-unzip data/raw/scipostlayout/scipostlayout.zip -d data/interim/scipostlayout
-```
-
-Install requirements.
-```bash
+# Install dependencies
 uv pip install -r requirements.txt
 ```
 
-Register the virtual environment as a jupyter kernel.
-```bash
-uv run ipython kernel install --user --env VIRTUAL_ENV $(pwd)/.venv --name=infographix-venv  
-```
-
-Start jupyter lab in a separate terminal **outside the venv**.
-```bash
-jupyter lab
-```
-Go to the url shown in the terminal, or go to http://localhost:8888/lab.
-Open a notebook, set the kernel to infographix-venv, and run something to test that it's working.
-
-**Before every commit, make sure to update requirements.txt**
-**Make sure you are in the activated virtual environment before running this:**
-```bash
-uv pip freeze | Out-File -Encoding utf8 requirements.txt
-```
-
----
-
-## Custom DVC / MyDVC Setup Notes
-Dataset versions and file manifests are tracked under `.mydvc/manifests/`.
+### 2. Custom DVC / MyDVC Setup Notes
+Dataset versions and file manifests are tracked under `.mydvc/manifests/` (e.g. `.mydvc/manifests/v0.manifest`, `v1.manifest`, `v2.manifest`), keeping Git repository size minimal while tracking full SHA-256 integrity for datasets in Google Drive.

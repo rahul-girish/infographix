@@ -1,42 +1,38 @@
-# Infographix frontend architecture
+# Infographix — Frontend Architecture
 
-## Runtime and entry points
+## 1. Overview
+The frontend is a focused **React + TypeScript + Vite** application using **Konva (`react-konva`)** and **Zustand** with two core routes:
 
-- React 19, TypeScript, Vite 8, React Router, Tailwind CSS v4, Zustand, Axios and React-Konva run from `frontend/`.
-- `src/main.tsx` mounts `src/App.tsx`; the router owns the public landing/auth routes and the project workflow routes.
-- The frontend is a static SPA. The current mock workflow can run without an API server.
+1. **`/` (`CreatePosterPage.tsx`)**:
+   - Poster details form: title, authors, affiliations, orientation (`landscape` / `portrait`), preferred columns (`Auto` / `2` / `3` / `4`), accent color, and AI engine selector (`Retrieval + HiGHS LP` vs. `Neural Layout Model`).
+   - Dynamic content blocks (`section`, `figure` with optional client-side image upload & automatic aspect ratio calculation, and `table` with rows/columns).
+   - Recent Supabase runs sidebar to reopen past runs and a direct `.jsonl` training-data download button.
+2. **`/editor/:runId` (`EditorPage.tsx`)**:
+   - Full interactive Konva canvas (`PosterCanvas.tsx`) with drag, resize, rotate, snap-to-grid, alignment guides, undo/redo, layers panel, and element properties (`EditorPanels.tsx`).
+   - MLOps provenance pill showing engine, retrieved template ID, quality score, and inference latency.
+   - Auto-saves canvas modifications back to Supabase (`PATCH /api/v1/runs/:runId`) so human edits are captured in `edited_layout`.
+   - Quick 1–5 star rating control for dataset labeling.
+   - Direct **PNG** download (clean 2x Konva stage snapshot with selection overlays hidden) and **PDF** download (via `POST /api/v1/export/pdf`).
 
-## Application routes
+---
 
-| Route | Responsibility |
-|---|---|
-| `/` | Product landing page and template/format overview |
-| `/login`, `/register`, `/forgot-password` | Mock authentication and account recovery |
-| `/dashboard` | Project search, status filters and project CRUD actions |
-| `/projects/:projectId/upload` | PDF/DOCX validation and simulated upload progress |
-| `/projects/:projectId/review` | Editable, reorderable, includable research sections |
-| `/projects/:projectId/configure` | Orientation, template, columns and background |
-| `/projects/:projectId/editor` | React-Konva editor and automatic local save |
-| `/projects/:projectId/preview` | Read-only preview, SVG export, print and mock submission |
+## 2. Directory Structure
 
-## Source organization
-
-- `src/pages/` contains route-level screens; authentication modes share `pages/auth/AuthPage.tsx`.
-- `src/components/layout/` contains public and workspace navigation.
-- `src/components/editor/` separates the Konva canvas from element tools, layers and properties.
-- `src/types/index.ts` defines the persisted project, research-section and poster JSON contracts.
-- `src/data/templates.ts` contains the five starter templates and independently editable starter layers.
-- `src/stores/editorStore.ts` is the transient Zustand editor state, including selection, view settings, undo and redo.
-- `src/services/` is the mock/backend seam. `projects.ts` persists projects; the other service modules isolate authentication, documents, extraction, posters, assets and submissions. `apiClient.ts` supplies a configurable Axios instance for later HTTP services.
-
-## Persistence and data flow
-
-Projects and poster JSON are stored under `infographix.projects.v1` in browser local storage. Projects hold editable section text and a `PosterDocument`, whose element array stores element type, geometry, rotation, layer order, visibility, lock state and type-specific properties. Uploaded editor images are data URLs in poster elements. The project service is the single persistence boundary, so replacing it with API calls does not require the pages or canvas to own storage details.
-
-The editor store is in-memory and receives the persisted poster when a project is opened. Changes update that structured document, enter the undo history and are debounced to the project service. Shift-click canvas or layer rows to select multiple elements, then group/ungroup from the properties panel. Preview/export renders the individual elements; it does not flatten the saved poster model.
-
-Mock auth stores only the current user identity in `sessionStorage`. Passwords are accepted by the mock form/service but are not written to browser storage. Document upload and extraction are simulations: the selected paper's contents are not sent to a server or parsed.
-
-## Local development
-
-From `frontend/`, run `npm install` only when dependencies need restoring, then `npm run dev`. Set `VITE_API_BASE_URL` in the environment (see `frontend/.env.example`) to configure the Axios base URL when implementing real HTTP services. The current mock services do not call it.
+```text
+frontend/src/
+├── App.tsx                       # Minimal router: `/` and `/editor/:runId`
+├── main.tsx                      # Entry point
+├── index.css                     # Application & editor styling
+├── types/index.ts                # Shared TypeScript interfaces
+├── stores/editorStore.ts         # Zustand canvas, undo/redo, and stage export store
+├── services/
+│   ├── apiClient.ts              # Axios client (VITE_API_BASE_URL || "/api")
+│   ├── assets.ts                 # Client-side image FileReader + aspect ratio helper
+│   └── posters.ts                # /v1/generate, /v1/runs, /v1/export/pdf API methods
+├── components/editor/
+│   ├── PosterCanvas.tsx          # Konva Stage + clean overlay layer for exports
+│   └── EditorPanels.tsx          # Left tools/layers sidebar & right properties inspector
+└── pages/
+    ├── CreatePosterPage.tsx      # Input form + recent runs + training data export
+    └── EditorPage.tsx            # Interactive editor, auto-save edits, PNG/PDF export
+```

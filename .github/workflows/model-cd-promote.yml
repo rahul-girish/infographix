@@ -1,0 +1,293 @@
+name: Promote Model & Deploy to Render
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_id:
+        description: "ClearML model ID (required unless semantic_version is provided)"
+        required: false
+        default: ""
+        type: string
+      semantic_version:
+        description: "Semantic version (e.g. 0.2.0) if model_id is omitted"
+        required: false
+        default: ""
+        type: string
+      model_family:
+        description: "Model family to promote"
+        required: true
+        default: "poster_layout_generator"
+        type: choice
+        options:
+          - poster_layout_generator
+          - poster_layout_retriever
+      target_stage:
+        description: "Target ClearML lifecycle stage & GitHub environment"
+        required: true
+        default: "production"
+        type: choice
+        options:
+          - staging
+          - production
+      archive_previous_in_stage:
+        description: "Archive existing models in target_stage to keep stage selection unambiguous"
+        required: true
+        default: true
+        type: boolean
+      deploy_to_render:
+        description: "Update Render env var (or trigger deploy hook) and verify /health/ready"
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  promote-and-deploy:
+    name: Promote (${{ inputs.target_stage }}) & Deploy Render
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target_stage }}
+    env:
+      PYTHONPATH: .
+      CLEARML_API_ACCESS_KEY: ${{ secrets.CLEARML_API_ACCESS_KEY }}
+      CLEARML_API_SECRET_KEY: ${{ secrets.CLEARML_API_SECRET_KEY }}
+      CLEARML_API_HOST: https://api.clear.ml
+      CLEARML_WEB_HOST: https://app.clear.ml
+      CLEARML_FILES_HOST: https://files.clear.ml
+      INPUT_MODEL_ID: ${{ inputs.model_id }}
+      INPUT_SEMANTIC_VERSION: ${{ inputs.semantic_version }}
+      INPUT_MODEL_FAMILY: ${{ inputs.model_family }}
+      INPUT_TARGET_STAGE: ${{ inputs.target_stage }}
+      INPUT_ARCHIVE_PREVIOUS: ${{ inputs.archive_previous_in_stage }}
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+      RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+      RENDER_SERVICE_URL: ${{ secrets.RENDER_SERVICE_URL }}
+      UV_VENV_CLEAR: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Validate inputs & ClearML credentials
+        run: |
+          if [ -z "$CLEARML_API_ACCESS_KEY" ] || [ -z "$CLEARML_API_SECRET_KEY" ]; then
+            echo "::error::CLEARML_API_ACCESS_KEY and CLEARML_API_SECRET_KEY secrets must be set."
+            exit 1
+          fi
+          if [ -z "$INPUT_MODEL_ID" ] && [ -z "$INPUT_SEMANTIC_VERSION" ]; then
+            echo "::error::Provide either model_id or semantic_version."
+            exit 1
+          fi
+
+      - name: Set up Python & uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install CPU PyTorch & ClearML registry dependencies
+        run: |
+          uv venv --clear .venv
+          uv pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.3.0"
+          uv pip install -r inference_service/requirements.txt
+
+      - name: Verify bundle integrity & promote model in ClearML
+        run: |
+          .venv/bin/python - <<'EOF'
+          import os
+          from clearml import Task
+          from src.registry.clearml_registry import (
+              _resolve_exact_model_id,
+              load_registered_model,
+              load_registered_retriever,
+              query_registered_models,
+              set_model_lifecycle_status,
+          )
+
+          Task.set_credentials(
+              api_host=os.environ["CLEARML_API_HOST"],
+              web_host=os.environ["CLEARML_WEB_HOST"],
+              files_host=os.environ["CLEARML_FILES_HOST"],
+              key=os.environ["CLEARML_API_ACCESS_KEY"],
+              secret=os.environ["CLEARML_API_SECRET_KEY"],
+          )
+
+          model_id_in = os.environ["INPUT_MODEL_ID"].strip() or None
+          sem_ver_in = os.environ["INPUT_SEMANTIC_VERSION"].strip() or None
+          family = os.environ["INPUT_MODEL_FAMILY"].strip()
+          target_stage = os.environ["INPUT_TARGET_STAGE"].strip()
+          archive_prev = os.environ["INPUT_ARCHIVE_PREVIOUS"].lower() == "true"
+
+          resolved_id = _resolve_exact_model_id(
+              model_id=model_id_in,
+              semantic_version=sem_ver_in,
+              model_family=family,
+          )
+
+          # Verify SHA-256 checksums and full model reconstruction before promoting
+          if family == "poster_layout_retriever":
+              _, manifest = load_registered_retriever(
+                  model_id=resolved_id,
+                  force_download=True,
+                  return_manifest=True,
+              )
+          else:
+              _, manifest = load_registered_model(
+                  model_id=resolved_id,
+                  device="cpu",
+                  force_download=True,
+                  return_manifest=True,
+              )
+
+          if archive_prev:
+              existing = query_registered_models(
+                  model_family=family,
+                  lifecycle_status=target_stage,
+              )
+              for item in existing:
+                  if item["model_id"] != resolved_id:
+                      set_model_lifecycle_status(
+                          target_status="archived",
+                          model_id=item["model_id"],
+                          model_family=family,
+                      )
+                      print(f"Archived previous {target_stage} model: {item['model_id']} ({item['name']})")
+
+          promo = set_model_lifecycle_status(
+              target_status=target_stage,
+              model_id=resolved_id,
+              model_family=family,
+          )
+          print(f"Promoted {resolved_id} ({family}) to {target_stage}: {promo}")
+
+          resolved_version = str(manifest.get("semantic_version", sem_ver_in or ""))
+          env_file = os.environ.get("GITHUB_ENV")
+          if env_file:
+              with open(env_file, "a", encoding="utf-8") as fh:
+                  fh.write(f"PROMOTED_MODEL_ID={resolved_id}\n")
+                  fh.write(f"PROMOTED_MODEL_VERSION={resolved_version}\n")
+          EOF
+
+      - name: Update Render service & trigger deploy
+        if: ${{ inputs.deploy_to_render }}
+        run: |
+          if [ -n "$RENDER_API_KEY" ] && [ -n "$RENDER_SERVICE_ID" ]; then
+            if [ "$INPUT_MODEL_FAMILY" = "poster_layout_retriever" ]; then
+              ENV_KEY="RETRIEVER_MODEL_ID"
+            else
+              ENV_KEY="NEURAL_MODEL_ID"
+            fi
+
+            echo "Updating Render env var $ENV_KEY=$PROMOTED_MODEL_ID on service $RENDER_SERVICE_ID..."
+            curl --fail-with-body --silent --show-error \
+              --request PUT \
+              --url "https://api.render.com/v1/services/${RENDER_SERVICE_ID}/env-vars/${ENV_KEY}" \
+              --header "Authorization: Bearer ${RENDER_API_KEY}" \
+              --header "Accept: application/json" \
+              --header "Content-Type: application/json" \
+              --data "{\"value\":\"${PROMOTED_MODEL_ID}\"}"
+
+            echo "Triggering Render deploy..."
+            DEPLOY_RESP=$(curl --fail-with-body --silent --show-error \
+              --request POST \
+              --url "https://api.render.com/v1/services/${RENDER_SERVICE_ID}/deploys" \
+              --header "Authorization: Bearer ${RENDER_API_KEY}" \
+              --header "Accept: application/json" \
+              --header "Content-Type: application/json" \
+              --data '{"clearCache":"do_not_clear"}')
+
+            DEPLOY_ID=$(.venv/bin/python -c 'import json, sys; print(json.loads(sys.stdin.read()).get("id", ""))' <<< "$DEPLOY_RESP")
+            echo "RENDER_DEPLOY_ID=${DEPLOY_ID}" >> "$GITHUB_ENV"
+            echo "Triggered Render deploy: ${DEPLOY_ID}"
+          elif [ -n "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "Triggering Render Deploy Hook..."
+            curl --fail-with-body --silent --show-error --request POST "$RENDER_DEPLOY_HOOK_URL"
+          else
+            echo "::error::Configure RENDER_API_KEY + RENDER_SERVICE_ID (recommended) or RENDER_DEPLOY_HOOK_URL in environment secrets."
+            exit 1
+          fi
+
+      - name: Wait for Render deploy & verify active model
+        if: ${{ inputs.deploy_to_render }}
+        run: |
+          if [ -n "$RENDER_DEPLOY_ID" ] && [ -n "$RENDER_API_KEY" ] && [ -n "$RENDER_SERVICE_ID" ]; then
+            echo "Polling Render deploy ${RENDER_DEPLOY_ID}..."
+            DEPLOY_LIVE=0
+            for i in $(seq 1 60); do
+              DEPLOY_JSON=$(curl --fail-with-body --silent --show-error \
+                --url "https://api.render.com/v1/services/${RENDER_SERVICE_ID}/deploys/${RENDER_DEPLOY_ID}" \
+                --header "Authorization: Bearer ${RENDER_API_KEY}" \
+                --header "Accept: application/json")
+              DEPLOY_STATUS=$(.venv/bin/python -c 'import json, sys; print(json.loads(sys.stdin.read()).get("status", ""))' <<< "$DEPLOY_JSON")
+              echo "Attempt ${i}/60: Render deploy status=${DEPLOY_STATUS}"
+              if [ "$DEPLOY_STATUS" = "live" ]; then
+                DEPLOY_LIVE=1
+                break
+              elif [ "$DEPLOY_STATUS" = "build_failed" ] || [ "$DEPLOY_STATUS" = "update_failed" ] || [ "$DEPLOY_STATUS" = "canceled" ] || [ "$DEPLOY_STATUS" = "deactivated" ]; then
+                echo "::error::Render deploy ${RENDER_DEPLOY_ID} ended with status=${DEPLOY_STATUS}"
+                exit 1
+              fi
+              sleep 10
+            done
+            if [ "$DEPLOY_LIVE" -ne 1 ]; then
+              echo "::error::Render deploy ${RENDER_DEPLOY_ID} did not reach 'live' within 600s."
+              exit 1
+            fi
+          fi
+
+          if [ -z "$RENDER_SERVICE_URL" ]; then
+            echo "RENDER_SERVICE_URL not set; skipping live /health/ready & /v1/models verification."
+            exit 0
+          fi
+
+          BASE_URL="${RENDER_SERVICE_URL%/}"
+          echo "Verifying ${BASE_URL}/health/ready serves model ${PROMOTED_MODEL_ID}..."
+          VERIFIED=0
+          for i in $(seq 1 36); do
+            STATUS=$(curl -s -o /tmp/ready.json -w "%{http_code}" "${BASE_URL}/health/ready" || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              ACTIVE_ID=$(.venv/bin/python - <<'PYEOF'
+          import json, os
+          from pathlib import Path
+          ready = json.loads(Path("/tmp/ready.json").read_text(encoding="utf-8"))
+          family = os.environ["INPUT_MODEL_FAMILY"]
+          slot_key = "retriever" if family == "poster_layout_retriever" else "neural_generator"
+          print((ready.get("selected_models", {}).get(slot_key, {}) or {}).get("clearml_model_id") or "")
+          PYEOF
+              )
+              if [ "$ACTIVE_ID" = "$PROMOTED_MODEL_ID" ]; then
+                VERIFIED=1
+                break
+              fi
+              echo "Attempt ${i}/36: /health/ready 200 but active model is '${ACTIVE_ID}' (waiting for '${PROMOTED_MODEL_ID}')..."
+            else
+              echo "Attempt ${i}/36: HTTP ${STATUS}, retrying in 10s..."
+            fi
+            sleep 10
+          done
+
+          if [ "$VERIFIED" -ne 1 ]; then
+            echo "::error::Render service did not become ready with model ${PROMOTED_MODEL_ID} within 360s."
+            cat /tmp/ready.json || true
+            exit 1
+          fi
+
+          curl --fail-with-body --silent --show-error "${BASE_URL}/v1/models" -o /tmp/models.json
+          .venv/bin/python - <<'EOF'
+          import json
+          import os
+          from pathlib import Path
+
+          ready = json.loads(Path("/tmp/ready.json").read_text(encoding="utf-8"))
+          models = json.loads(Path("/tmp/models.json").read_text(encoding="utf-8"))
+          expected_id = os.environ["PROMOTED_MODEL_ID"]
+          family = os.environ["INPUT_MODEL_FAMILY"]
+          print("Render /v1/models:", json.dumps(models, indent=2))
+
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as fh:
+                  fh.write("## Render Deployment Verified\n\n")
+                  fh.write(f"- **Family:** `{family}`\n")
+                  fh.write(f"- **Lifecycle Stage:** `{os.environ['INPUT_TARGET_STAGE']}`\n")
+                  fh.write(f"- **Promoted Model ID:** `{expected_id}`\n")
+                  fh.write(f"- **Service Health:** `{ready.get('status')}`\n")
+          EOF

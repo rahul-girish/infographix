@@ -8,26 +8,50 @@ mlflow.db
 mlflow.db-shm
 mlflow.db-wal
 mlruns/
-
 .aim/
 
-# Python cache
+# Python cache & test
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Dataset
-data/raw/
-data/interim/scipostlayout/paper/
-data/interim/scipostlayout/poster/pdf/
-data/interim/scipostlayout/poster/load_dataset.py
-data/interim/scipostlayout/poster/png/dev/
-data/interim/scipostlayout/poster/png/train/
-data/interim/scipostlayout/poster/png/test/
-data/interim/scipostlayout/poster/png/*.json
-data/interim/scipostlayout/poster/png/*.txt
+# Environment secrets
+.env
+backend/.env
+
+# Blanket Ignore for All Datasets & Uploads
+data/
+data/**
+backend/data/
+backend/data/**
+
+# All raw dataset images and documents
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.pdf
+*.docx
+!frontend/src/**/*.png
+!frontend/src/**/*.jpg
+!frontend/src/**/*.svg
+!frontend/public/**/*.png
+!frontend/public/**/*.svg
+!frontend/public/**/*.ico
+
+# Database files
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
 
 /models/
 /reports/
 
 *.zst
 /.mydvc/credentials
+clearml.conf
+*.clearml.conf
