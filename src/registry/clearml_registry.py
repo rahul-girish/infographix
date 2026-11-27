@@ -104,10 +104,10 @@ def get_feature_schema() -> dict[str, Any]:
             {"index": 11, "name": "has_text_length", "description": "1.0 if extracted text length available else 0.0"},
             {"index": 12, "name": "aspect_ratio", "description": "intrinsic width/height if has_aspect_ratio else 1.0"},
             {"index": 13, "name": "has_aspect_ratio", "description": "1.0 if intrinsic asset dimension available else 0.0"},
-            {"index": 14, "name": "table_rows_scaled", "description": "table_rows / 10.0"},
-            {"index": 15, "name": "table_cols_scaled", "description": "table_cols / 10.0"},
+            {"index": 14, "name": "section_group_norm", "description": "normalized document section group index in [0, 1]"},
+            {"index": 15, "name": "in_cat_rank_norm", "description": "normalized within-category document rank in [0, 1]"},
             {"index": 16, "name": "priority", "description": "element importance score in [0.1, 1.0]"},
-            {"index": 17, "name": "shuffled_order_ratio", "description": "decoupled input index / total_items"},
+            {"index": 17, "name": "shuffled_order_ratio", "description": "decoupled input index / total_items (0.0 when include_order_index=False)"},
         ],
         "template_feature_dim": TEMPLATE_FEAT_DIM,
         "template_features": [
@@ -230,6 +230,8 @@ def extract_training_config_from_checkpoint(checkpoint_data: dict[str, Any]) -> 
         "optimizer": "AdamW",
         "scheduler": f"CosineAnnealingLR(T_max={getattr(cfg, 'num_epochs', 1)}, eta_min=1e-5)",
         "loss_weights": loss_weights_dict,
+        "use_hungarian_matching": bool(getattr(cfg, "use_hungarian_matching", False)),
+        "include_order_index": bool(getattr(cfg, "include_order_index", True)),
         "execution_env": str(getattr(cfg, "execution_env", "unknown")),
         "checkpoint_epoch": int(checkpoint_data.get("epoch", -1)),
         "retriever_model_name": str(

@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
+from scipy.optimize import linear_sum_assignment
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -81,15 +83,74 @@ class LossWeights:
 
 
 class MultiTaskLayoutLoss(nn.Module):
-    """Computes all individual layout loss components with strict masking."""
+    """Computes all individual layout loss components with strict masking and optional Hungarian matching."""
 
-    def __init__(self, weights: LossWeights | None = None):
+    def __init__(
+        self,
+        weights: LossWeights | None = None,
+        use_hungarian_matching: bool = False,
+    ):
         super().__init__()
         self.weights = weights or LossWeights()
+        self.use_hungarian_matching = bool(use_hungarian_matching)
         self.smooth_l1 = nn.SmoothL1Loss(reduction="none", beta=0.05)
         self.size_l1 = nn.SmoothL1Loss(reduction="none", beta=0.1)
         self.fig_idx = CATEGORY_TO_IDX.get("figure", 4)
         self.cap_idx = CATEGORY_TO_IDX.get("caption", 6)
+
+    @torch.no_grad()
+    def _match_targets_within_category(
+        self,
+        pred_boxes: torch.Tensor,
+        target_boxes: torch.Tensor,
+        target_cols: torch.Tensor,
+        target_orders: torch.Tensor,
+        content_mask: torch.Tensor,
+        content_feats: torch.Tensor,
+        exempt_mask: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        """Match predicted boxes to ground-truth targets within each semantic category via Hungarian algorithm."""
+        B, M, _ = pred_boxes.shape
+        device = pred_boxes.device
+
+        matched_boxes = target_boxes.clone()
+        matched_cols = target_cols.clone()
+        matched_orders = target_orders.clone()
+        matched_exempt = exempt_mask.clone() if exempt_mask is not None else None
+
+        cat_ids = torch.argmax(content_feats[..., :9], dim=-1)  # [B, M]
+
+        for b in range(B):
+            valid_idx = torch.nonzero(content_mask[b], as_tuple=True)[0]
+            if len(valid_idx) <= 1:
+                continue
+
+            perm = torch.arange(M, device=device)
+            b_cats = cat_ids[b, valid_idx]
+            for c_val in torch.unique(b_cats):
+                c_indices = valid_idx[b_cats == c_val]
+                if len(c_indices) <= 1:
+                    continue
+
+                p_c = pred_boxes[b, c_indices].detach().float()   # [n_c, 4]
+                t_c = target_boxes[b, c_indices].detach().float() # [n_c, 4]
+
+                l1_cost = torch.cdist(p_c, t_c, p=1)  # [n_c, n_c]
+                giou_mat = compute_giou(p_c.unsqueeze(1), t_c.unsqueeze(0))  # [n_c, n_c]
+                cost = (1.5 * l1_cost + 1.0 * (1.0 - giou_mat)).cpu().numpy()
+
+                row_ind, col_ind = linear_sum_assignment(cost)
+                src_pos = c_indices[torch.as_tensor(row_ind, device=device, dtype=torch.long)]
+                tgt_pos = c_indices[torch.as_tensor(col_ind, device=device, dtype=torch.long)]
+                perm[src_pos] = tgt_pos
+
+            matched_boxes[b] = target_boxes[b, perm]
+            matched_cols[b] = target_cols[b, perm]
+            matched_orders[b] = target_orders[b, perm]
+            if matched_exempt is not None:
+                matched_exempt[b] = exempt_mask[b][perm][:, perm]
+
+        return matched_boxes, matched_cols, matched_orders, matched_exempt
 
     def forward(
         self,
@@ -108,6 +169,18 @@ class MultiTaskLayoutLoss(nn.Module):
         macro_targets = batch["macro_targets"]                  # [B]
         content_mask = batch["content_mask"]                    # [B, M] bool
         content_feats = batch["content_feats"]                  # [B, M, 18]
+        exempt_mask = batch.get("target_overlap_exempt_mask")
+
+        if self.use_hungarian_matching:
+            target_boxes, target_cols, target_orders, exempt_mask = self._match_targets_within_category(
+                pred_boxes=pred_boxes,
+                target_boxes=target_boxes,
+                target_cols=target_cols,
+                target_orders=target_orders,
+                content_mask=content_mask,
+                content_feats=content_feats,
+                exempt_mask=exempt_mask,
+            )
 
         B, M, _ = pred_boxes.shape
         mask_f = content_mask.float()
@@ -159,7 +232,6 @@ class MultiTaskLayoutLoss(nn.Module):
         diag_mask = torch.eye(M, device=pred_boxes.device, dtype=torch.bool).unsqueeze(0)
         pair_active = valid_pair_mask & (~diag_mask)
 
-        exempt_mask = batch.get("target_overlap_exempt_mask")
         if exempt_mask is not None:
             exempt_mask = exempt_mask.to(device=pred_boxes.device, dtype=torch.bool)
             overlap_weight_matrix = torch.where(
