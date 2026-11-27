@@ -101,6 +101,7 @@ class TrainingConfig:
     min_box_width: float = 0.01
     min_box_height: float = 0.005
     include_order_index: bool = True
+    use_hungarian_matching: bool = False
     retriever_model_name: str = "poster_layout_retriever"
     retriever_model_id: str | None = None
     retriever_version: str | None = None
@@ -134,7 +135,10 @@ class LayoutTrainer:
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
 
-        self.loss_fn = MultiTaskLayoutLoss(weights=config.loss_weights)
+        self.loss_fn = MultiTaskLayoutLoss(
+            weights=config.loss_weights,
+            use_hungarian_matching=config.use_hungarian_matching,
+        )
         self.evaluator = LayoutEvaluator()
 
         opt_name = config.optimizer_name.lower()
@@ -271,6 +275,7 @@ class LayoutTrainer:
             "training/amp_enabled": self.amp_enabled,
             "training/early_stopping_patience": self.config.early_stopping_patience,
             "training/include_order_index": self.config.include_order_index,
+            "training/use_hungarian_matching": self.config.use_hungarian_matching,
             "training/device": str(self.device),
             "training/device_name": device_name,
             "training/execution_env": self.config.execution_env,
@@ -343,6 +348,7 @@ class LayoutTrainer:
 
             eval_metric_specs = [
                 ("Metrics - Alignment", "val_iou_mean", "val_iou_mean"),
+                ("Metrics - Alignment", "val_hungarian_iou_mean", "val_hungarian_iou_mean"),
                 ("Metrics - Alignment", "val_giou_mean", "val_giou_mean"),
                 ("Metrics - Alignment", "val_center_l1_error", "val_center_l1_error"),
                 ("Metrics - Geometric Constraints", "val_canvas_violation_rate", "val_canvas_violation_rate"),
@@ -549,6 +555,7 @@ class LayoutTrainer:
             "train_loss": [],
             "val_loss": [],
             "val_iou": [],
+            "val_hungarian_iou": [],
             "val_giou": [],
             "val_boundary_violations": [],
             "val_unintended_overlaps": [],
@@ -573,6 +580,7 @@ class LayoutTrainer:
             history["train_loss"].append(train_m.get("loss_total", 0.0))
             history["val_loss"].append(val_m.get("val_loss_total", 0.0))
             history["val_iou"].append(val_m.get("val_iou_mean", 0.0))
+            history["val_hungarian_iou"].append(val_m.get("val_hungarian_iou_mean", 0.0))
             history["val_giou"].append(val_m.get("val_giou_mean", 0.0))
             history["val_boundary_violations"].append(val_m.get("val_canvas_violation_rate", 0.0))
             history["val_unintended_overlaps"].append(val_m.get("val_unintended_overlap_rate", 0.0))
@@ -612,6 +620,7 @@ class LayoutTrainer:
                 f"Train Loss: {train_m.get('loss_total', 0.0):.4f} | "
                 f"Val Loss: {val_m.get('val_loss_total', 0.0):.4f} | "
                 f"Val IoU: {val_iou:.4f} | "
+                f"Hung IoU: {val_m.get('val_hungarian_iou_mean', 0.0):.4f} | "
                 f"Overlap: {val_m.get('val_unintended_overlap_rate', 0.0):.3f} | "
                 f"Col Acc: {val_m.get('val_column_accuracy', 0.0):.3f} | "
                 f"Order Tau: {val_m.get('val_reading_order_kendall_tau', 0.0):.3f} "
