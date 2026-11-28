@@ -137,7 +137,57 @@ class ServiceMetrics:
             registry=self.registry,
         )
 
+        # --- Online Data Drift Gauges ---
+        self.drift_window_samples = Gauge(
+            "infographix_drift_window_samples",
+            "Number of recent production requests in the rolling drift window.",
+            registry=self.registry,
+        )
+        self.feature_drift_psi = Gauge(
+            "infographix_feature_drift_psi",
+            "Population Stability Index (PSI) for each monitored input feature vs. train split.",
+            labelnames=("feature",),
+            registry=self.registry,
+        )
+        self.feature_drift_ks = Gauge(
+            "infographix_feature_drift_ks",
+            "Two-sample KS statistic for each monitored input feature vs. train split.",
+            labelnames=("feature",),
+            registry=self.registry,
+        )
+        self.feature_current_mean = Gauge(
+            "infographix_feature_current_mean",
+            "Rolling-window mean of each monitored input feature in production.",
+            labelnames=("feature",),
+            registry=self.registry,
+        )
+        self.feature_reference_mean = Gauge(
+            "infographix_feature_reference_mean",
+            "Training-split reference mean of each monitored input feature.",
+            labelnames=("feature",),
+            registry=self.registry,
+        )
+        self.drift_orientation_shift = Gauge(
+            "infographix_drift_orientation_shift",
+            "Absolute shift in landscape orientation rate vs. training split.",
+            registry=self.registry,
+        )
+        self.drift_overall_psi = Gauge(
+            "infographix_drift_overall_psi",
+            "Maximum PSI across all monitored input features.",
+            registry=self.registry,
+        )
+        self.drift_alert_active = Gauge(
+            "infographix_drift_alert_active",
+            "1 if overall input drift PSI exceeds threshold, 0 otherwise.",
+            registry=self.registry,
+        )
+
         self.service_ready.set(0)
+        self.drift_window_samples.set(0)
+        self.drift_orientation_shift.set(0.0)
+        self.drift_overall_psi.set(0.0)
+        self.drift_alert_active.set(0.0)
         self.update_process_memory()
 
     def update_process_memory(self) -> float:
@@ -208,6 +258,18 @@ class ServiceMetrics:
             status=status,
         ).inc()
         self.update_process_memory()
+
+    def update_drift_metrics(self, snapshot: dict[str, Any]) -> None:
+        """Sync online drift monitor snapshot into Prometheus gauges."""
+        self.drift_window_samples.set(float(snapshot.get("window_samples", 0)))
+        self.drift_orientation_shift.set(float(snapshot.get("orientation_shift", 0.0)))
+        self.drift_overall_psi.set(float(snapshot.get("overall_psi", 0.0)))
+        self.drift_alert_active.set(1.0 if snapshot.get("alert_active") else 0.0)
+        for fname, fdata in (snapshot.get("features") or {}).items():
+            self.feature_drift_psi.labels(feature=fname).set(float(fdata.get("psi", 0.0)))
+            self.feature_drift_ks.labels(feature=fname).set(float(fdata.get("ks_stat", 0.0)))
+            self.feature_current_mean.labels(feature=fname).set(float(fdata.get("current_mean", 0.0)))
+            self.feature_reference_mean.labels(feature=fname).set(float(fdata.get("reference_mean", 0.0)))
 
     def render_prometheus(self) -> tuple[bytes, str]:
         """Refresh process memory gauge and render metrics in Prometheus text exposition format."""

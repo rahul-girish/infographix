@@ -16,7 +16,10 @@ from inference_service.app.routes.generation import router as generation_router
 from inference_service.app.routes.health import router as health_router
 from inference_service.app.routes.metrics import router as metrics_router
 from inference_service.app.routes.models import router as models_router
+from inference_service.app.services.drift_monitor import OnlineDriftMonitor
+from inference_service.app.services.grafana_pusher import GrafanaCloudPusher
 from inference_service.app.services.inference_manager import InferenceManager
+from inference_service.app.services.keepalive import KeepalivePinger
 from inference_service.app.services.memory_profiler import MemoryTracker
 from inference_service.app.services.metrics import ServiceMetrics
 
@@ -31,16 +34,62 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     tracker = MemoryTracker()
     tracker.record("process_startup")
     metrics = ServiceMetrics()
-    manager = InferenceManager(memory_tracker=tracker, metrics=metrics)
+    drift_monitor = OnlineDriftMonitor(
+        window_size=cfg.DRIFT_WINDOW_SIZE,
+        min_samples=cfg.DRIFT_MIN_SAMPLES,
+        psi_threshold=cfg.DRIFT_PSI_THRESHOLD,
+    )
+    metrics.update_drift_metrics(drift_monitor.get_snapshot())
+
+    grafana_pusher: GrafanaCloudPusher | None = None
+    if (
+        cfg.METRICS_ENABLED
+        and cfg.GRAFANA_OTLP_ENDPOINT
+        and cfg.GRAFANA_INSTANCE_ID
+        and cfg.GRAFANA_API_KEY
+    ):
+        grafana_pusher = GrafanaCloudPusher(
+            metrics=metrics,
+            otlp_endpoint=cfg.GRAFANA_OTLP_ENDPOINT,
+            instance_id=cfg.GRAFANA_INSTANCE_ID,
+            api_key=cfg.GRAFANA_API_KEY,
+            interval_seconds=cfg.GRAFANA_PUSH_INTERVAL_SECONDS,
+            service_version=cfg.SERVICE_VERSION,
+        )
+
+    keepalive: KeepalivePinger | None = None
+    if cfg.KEEPALIVE_ENABLED and cfg.BACKEND_SERVICE_URL:
+        keepalive = KeepalivePinger(
+            target_url=cfg.BACKEND_SERVICE_URL,
+            interval_seconds=cfg.KEEPALIVE_INTERVAL_SECONDS,
+            timeout_seconds=cfg.KEEPALIVE_TIMEOUT_SECONDS,
+        )
+
+    manager = InferenceManager(
+        memory_tracker=tracker,
+        metrics=metrics,
+        drift_monitor=drift_monitor,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.settings = cfg
         app.state.inference_manager = manager
         app.state.metrics = metrics
+        app.state.drift_monitor = drift_monitor
+        app.state.grafana_pusher = grafana_pusher
+        app.state.keepalive = keepalive
         if not cfg.SKIP_STARTUP_INIT:
             manager.initialize(cfg)
+        if grafana_pusher is not None:
+            grafana_pusher.start()
+        if keepalive is not None:
+            keepalive.start()
         yield
+        if keepalive is not None:
+            keepalive.stop()
+        if grafana_pusher is not None:
+            grafana_pusher.stop()
         manager.shutdown()
 
     app = FastAPI(
@@ -54,6 +103,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = cfg
     app.state.inference_manager = manager
     app.state.metrics = metrics
+    app.state.drift_monitor = drift_monitor
+    app.state.grafana_pusher = grafana_pusher
+    app.state.keepalive = keepalive
 
     app.add_middleware(
         CORSMiddleware,
@@ -107,6 +159,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "models": "/v1/models",
             "generate": "/v1/layouts/generate",
             "metrics": "/metrics" if cfg.METRICS_ENABLED else None,
+            "drift": "/v1/monitoring/drift" if cfg.METRICS_ENABLED else None,
         }
 
     return app

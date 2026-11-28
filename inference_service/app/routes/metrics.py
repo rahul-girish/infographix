@@ -28,3 +28,18 @@ def prometheus_metrics(request: Request) -> Response:
     metrics = request.app.state.metrics
     payload, content_type = metrics.render_prometheus()
     return Response(content=payload, media_type=content_type)
+
+
+@router.get("/v1/monitoring/drift")
+def drift_status(request: Request) -> dict:
+    """Return current rolling-window data drift report and Grafana Cloud push status."""
+    drift_monitor = getattr(request.app.state, "drift_monitor", None)
+    pusher = getattr(request.app.state, "grafana_pusher", None)
+    report = drift_monitor.get_snapshot() if drift_monitor is not None else {"ready": False}
+    report["grafana_cloud_push"] = {
+        "enabled": pusher is not None,
+        "push_count": getattr(pusher, "push_count", 0),
+        "last_push_ok": getattr(pusher, "last_push_ok", None),
+        "last_error": getattr(pusher, "last_error", None),
+    }
+    return report
