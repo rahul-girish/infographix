@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     NEURAL_LIFECYCLE_STAGE: Optional[str] = None
 
     DEFAULT_ENGINE: Literal["adaptation", "neural"] = "neural"
+    NEURAL_USE_REFINER: bool = True
     TORCH_DEVICE: str = "cpu"
 
     # Template element geometry table dependency (data/processed/features/v1/elements.parquet)
