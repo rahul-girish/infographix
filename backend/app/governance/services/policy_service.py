@@ -272,14 +272,16 @@ class PolicyService:
                     elif float(metrics["val_iou_mean"]) < min_iou:
                         failures.append(f"val_iou_mean={float(metrics['val_iou_mean']):.4f} < {min_iou}")
 
-                    if "val_canvas_violation_rate" in metrics and float(metrics["val_canvas_violation_rate"]) > max_viol:
+                    if "val_canvas_violation_rate" not in metrics:
+                        failures.append("missing 'val_canvas_violation_rate'")
+                    elif float(metrics["val_canvas_violation_rate"]) > max_viol:
                         failures.append(
                             f"val_canvas_violation_rate={float(metrics['val_canvas_violation_rate']):.4f} > {max_viol}"
                         )
-                    if (
-                        "val_unintended_overlap_mean_area" in metrics
-                        and float(metrics["val_unintended_overlap_mean_area"]) > max_ovl
-                    ):
+
+                    if "val_unintended_overlap_mean_area" not in metrics:
+                        failures.append("missing 'val_unintended_overlap_mean_area'")
+                    elif float(metrics["val_unintended_overlap_mean_area"]) > max_ovl:
                         failures.append(
                             f"val_unintended_overlap_mean_area={float(metrics['val_unintended_overlap_mean_area']):.4f} > {max_ovl}"
                         )
@@ -300,13 +302,15 @@ class PolicyService:
                     min_posters = int(cfg.get("min_train_posters", 100))
                     require_train_only = bool(cfg.get("require_train_only", True))
                     n_posters = int(metrics.get("n_train_posters", deps.get("n_train_posters", 0)) or 0)
-                    train_only_flag = metrics.get("train_only_verified", deps.get("train_only_verified", True))
+                    train_only_flag = metrics.get("train_only_verified", deps.get("train_only_verified"))
 
                     failures = []
                     if n_posters < min_posters:
                         failures.append(f"n_train_posters={n_posters} < {min_posters}")
-                    if require_train_only and train_only_flag is False:
-                        failures.append("anti-leakage check failed (train_only_verified=false)")
+                    if require_train_only and train_only_flag is not True:
+                        failures.append(
+                            "anti-leakage check failed (explicit train_only_verified=true required)"
+                        )
                     if failures:
                         passed = False
                         msg = "; ".join(failures)

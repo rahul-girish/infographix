@@ -9,6 +9,7 @@ from typing import Optional
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
+from backend.app.governance.adapters.clearml_adapter import get_clearml_adapter
 from backend.app.governance.auth import ActorContext
 from backend.app.governance.exceptions import ConflictError, ResourceNotFoundError, ValidationError
 from backend.app.governance.models import DriftEvent, GovernedDataset, GovernedModel
@@ -99,6 +100,15 @@ class DriftService:
                 policy_action = "marked_non_compliant_critical_drift"
             elif drift_cfg.get("block_promotion_on_critical_drift", True):
                 policy_action = "promotion_blocked_on_critical_drift"
+        elif payload.drift_status == "none" and prev_drift in ("warning", "critical"):
+            passed, _, _ = PolicyService.evaluate_model(
+                db,
+                model,
+                target_stage=model.lifecycle_status,
+                clearml_adapter=get_clearml_adapter(),
+            )
+            model.compliance_status = "compliant" if passed else "non_compliant"
+            policy_action = "recovered_compliance_reevaluated"
 
         model.updated_at = datetime.now(timezone.utc)
 

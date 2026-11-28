@@ -34,7 +34,7 @@ DATASET_STORAGE_SYSTEMS = ("minidvc", "s3", "clearml_dataset", "local")
 
 # Approval workflow constants
 APPROVAL_REQUEST_TYPES = ("promotion", "rollback")
-APPROVAL_REQUEST_STATUSES = ("pending", "approved", "rejected", "cancelled", "invalidated")
+APPROVAL_REQUEST_STATUSES = ("pending", "approved", "executed", "rejected", "cancelled", "invalidated")
 APPROVAL_DECISIONS = ("approved", "rejected")
 
 # Policy constants
@@ -213,7 +213,7 @@ DEFAULT_POLICIES: list[dict] = [
         "description": "Control compliance and promotion behavior when critical data drift is reported.",
         "model_family": None,
         "policy_type": "drift",
-        "enforcement_mode": "warning",
+        "enforcement_mode": "blocking",
         "is_enabled": True,
         "config": {
             "block_promotion_on_critical_drift": True,

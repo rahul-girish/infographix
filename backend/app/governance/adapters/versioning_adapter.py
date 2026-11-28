@@ -44,6 +44,15 @@ class MockVersioningAdapter:
                 "clearml_version": "2.2.0",
                 "is_mock": True,
             },
+            "dependencies_summary": (
+                {}
+                if model_family == "poster_layout_generator"
+                else {
+                    "n_train_posters": 5498,
+                    "train_poster_ids_sha256": sha,
+                    "train_only_verified": True,
+                }
+            ),
             "metrics_summary": (
                 {
                     "val_iou_mean": 0.31,
@@ -53,8 +62,6 @@ class MockVersioningAdapter:
                 }
                 if model_family == "poster_layout_generator"
                 else {
-                    "n_train_posters": 5498,
-                    "train_only_verified": True,
                     "ndcg_at_5": 0.78,
                 }
             ),

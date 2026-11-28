@@ -16,8 +16,8 @@ from typing import Generator
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event, inspect
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 # Ensure isolated SQLite DATABASE_URL before importing backend.app.*
@@ -30,7 +30,9 @@ from backend.app.governance.adapters.drift_adapter import MockDriftAdapter
 from backend.app.governance.adapters.versioning_adapter import MockVersioningAdapter
 from backend.app.governance.config import governance_settings
 from backend.app.governance.exceptions import AuditImmutabilityError
-from backend.app.governance.models import AuditEvent, GovernedDataset
+from backend.app.governance.models import AuditEvent, GovernancePolicy, GovernedDataset
+from backend.app.governance.router import get_clearml_adapter as _unused_import_check  # noqa: F401
+from backend.app.governance.services.model_service import ModelService
 from backend.app.governance.services.policy_service import PolicyService
 from backend.app.main import app
 
@@ -221,7 +223,7 @@ class GovernanceModuleTestCase(unittest.TestCase):
         )
         self.assertEqual(dup_ds.status_code, 409)
 
-        # Invalid SHA-256 -> 422
+        # Invalid SHA-256 -> 422 with standardized ErrorEnvelope
         bad_sha = self.client.post(
             "/api/v1/governance/models",
             headers=self._headers("tok-eng"),
@@ -237,6 +239,7 @@ class GovernanceModuleTestCase(unittest.TestCase):
             },
         )
         self.assertEqual(bad_sha.status_code, 422)
+        self.assertEqual(bad_sha.json()["error"]["code"], "VALIDATION_ERROR")
 
         # Missing dataset_id for non-exempt version -> 422 policy violation
         no_ds = self.client.post(
@@ -369,11 +372,11 @@ class GovernanceModuleTestCase(unittest.TestCase):
         self.assertEqual(req_reg.status_code, 201)
         self.assertFalse(req_reg.json()["automated_check_passed"])
         self.assertTrue(req_reg.json()["shadow_comparison_report"]["regression_detected"])
-        # Reviewer cannot approve a regression-blocked request without admin policy_override
+        # Regression-blocked request cannot be approved even with policy_override=True
         bad_app = self.client.post(
             f"/api/v1/governance/approval-requests/{req_reg.json()['id']}/decide",
-            headers=self._headers("tok-rev"),
-            json={"decision": "approved", "comment": "Attempt approve"},
+            headers=self._headers("tok-admin"),
+            json={"decision": "approved", "comment": "Attempt approve", "policy_override": True},
         )
         self.assertEqual(bad_app.status_code, 422)
 
@@ -500,7 +503,7 @@ class GovernanceModuleTestCase(unittest.TestCase):
         self.assertEqual(m_after["drift_status"], "critical")
         self.assertEqual(m_after["compliance_status"], "non_compliant")
 
-        # AuditEvent ORM immutability guard
+        # AuditEvent ORM single-object & bulk-delete immutability guards
         with self.SessionFactory() as db:
             ev = db.query(AuditEvent).first()
             self.assertIsNotNone(ev)
@@ -513,6 +516,10 @@ class GovernanceModuleTestCase(unittest.TestCase):
             db.delete(ev2)
             with self.assertRaises(AuditImmutabilityError):
                 db.flush()
+            db.rollback()
+
+            with self.assertRaises(AuditImmutabilityError):
+                db.query(AuditEvent).delete()
             db.rollback()
 
     # 5. Minidvc Manifest Ingestion, Overview, & DB Foreign Key Restriction
@@ -630,6 +637,293 @@ class GovernanceModuleTestCase(unittest.TestCase):
         self.assertEqual(me_dev.json()["auth_source"], "dev_header")
         self.assertEqual(me_dev.json()["role"], "viewer")
 
+    # 8. Critical Drift Blocking Gate, Recovery, Cancel & Demote/Replay Protection
+    def test_critical_drift_blocks_promotion_demote_prevents_replay_and_cancel(self) -> None:
+        ds_id = self._register_sample_dataset("2.4.0")
+        m = self._register_sample_model(ds_id, version="0.6.0", val_iou=0.35)
+        self.assertEqual(
+            self.client.post(
+                f"/api/v1/governance/models/{m['id']}/promote-staging",
+                headers=self._headers("tok-eng"),
+                json={"reason": "Stage v0.6.0"},
+            ).status_code,
+            200,
+        )
+
+        # Create & cancel a pending approval request
+        req_cancel = self.client.post(
+            f"/api/v1/governance/models/{m['id']}/approval-requests",
+            headers=self._headers("tok-eng"),
+            json={"target_stage": "production", "request_type": "promotion", "reason": "Initial ask"},
+        ).json()
+        c_resp = self.client.post(
+            f"/api/v1/governance/approval-requests/{req_cancel['id']}/cancel",
+            headers=self._headers("tok-eng"),
+            json={"reason": "Withdrawing to wait for drift check"},
+        )
+        self.assertEqual(c_resp.status_code, 200)
+        self.assertEqual(c_resp.json()["status"], "cancelled")
+
+        # Create new request, approve it, then trigger critical drift -> promotion-gate & promote-production MUST block
+        req = self.client.post(
+            f"/api/v1/governance/models/{m['id']}/approval-requests",
+            headers=self._headers("tok-eng"),
+            json={"target_stage": "production", "request_type": "promotion", "reason": "Promote v0.6.0"},
+        ).json()
+        self.assertEqual(
+            self.client.post(
+                f"/api/v1/governance/approval-requests/{req['id']}/decide",
+                headers=self._headers("tok-rev"),
+                json={"decision": "approved", "comment": "Looks good"},
+            ).status_code,
+            200,
+        )
+
+        crit_drift = MockDriftAdapter.build_sample_drift_payload(
+            model_id=m["id"], monitoring_run_id="crit-block-001", drift_status="critical"
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/v1/governance/drift-events",
+                headers=self._headers("tok-eng"),
+                json=crit_drift,
+            ).status_code,
+            201,
+        )
+        gate_blocked = self.client.get(
+            f"/api/v1/governance/models/{m['id']}/promotion-gate",
+            headers=self._headers("tok-admin"),
+        )
+        self.assertEqual(gate_blocked.status_code, 200)
+        self.assertFalse(gate_blocked.json()["eligible"])
+        self.assertEqual(
+            self.client.post(
+                f"/api/v1/governance/models/{m['id']}/promote-production",
+                headers=self._headers("tok-admin"),
+                json={"reason": "Attempt while critical drift"},
+            ).status_code,
+            422,
+        )
+
+        # Drift recovers to 'none' -> compliance restored -> promote-production succeeds
+        ok_drift = MockDriftAdapter.build_sample_drift_payload(
+            model_id=m["id"], monitoring_run_id="crit-recover-002", drift_status="none"
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/v1/governance/drift-events",
+                headers=self._headers("tok-eng"),
+                json=ok_drift,
+            ).status_code,
+            201,
+        )
+        self.assertEqual(
+            self.client.post(
+                f"/api/v1/governance/models/{m['id']}/promote-production",
+                headers=self._headers("tok-admin"),
+                json={"reason": "Promote after drift recovery"},
+            ).status_code,
+            200,
+        )
+
+        # Consumed approval request cannot be replayed after production -> staging demotion
+        demote = self.client.post(
+            f"/api/v1/governance/models/{m['id']}/demote-staging",
+            headers=self._headers("tok-admin"),
+            json={"reason": "Emergency demotion"},
+        )
+        self.assertEqual(demote.status_code, 200)
+        self.assertEqual(demote.json()["lifecycle_status"], "staging")
+
+        replay = self.client.post(
+            f"/api/v1/governance/models/{m['id']}/promote-production",
+            headers=self._headers("tok-admin"),
+            json={"reason": "Attempt replay old approval"},
+        )
+        self.assertEqual(replay.status_code, 422)
+
+    # 9. Security Edge Cases (Strict Mode Ignores Dev Headers, JWT Errors, Cross-Role RBAC)
+    def test_strict_mode_jwt_errors_and_cross_role_rbac(self) -> None:
+        # Strict mode ignores X-Actor-Id / X-Actor-Role headers
+        r_dev_hdr = self.client.get(
+            "/api/v1/governance/me",
+            headers={"X-Actor-Id": "evil", "X-Actor-Role": "admin"},
+        )
+        self.assertEqual(r_dev_hdr.status_code, 401)
+
+        # Expired, bad sig, non-numeric exp, alg=none JWTs -> 401
+        secret = "test-governance-secret-key"
+        for bad_claims in (
+            {"sub": "u1", "exp": time.time() - 10},
+            {"sub": "u1", "nbf": time.time() + 300},
+            {"sub": "u1", "exp": "not-a-number"},
+        ):
+            tok = _make_hs256_jwt(bad_claims, secret=secret)
+            self.assertEqual(
+                self.client.get(
+                    "/api/v1/governance/me", headers={"Authorization": f"Bearer {tok}"}
+                ).status_code,
+                401,
+            )
+
+        bad_sig_tok = _make_hs256_jwt({"sub": "u1", "exp": time.time() + 60}, secret="wrong-secret")
+        self.assertEqual(
+            self.client.get(
+                "/api/v1/governance/me", headers={"Authorization": f"Bearer {bad_sig_tok}"}
+            ).status_code,
+            401,
+        )
+
+        # Cross-role RBAC boundaries
+        ds_id = self._register_sample_dataset("2.5.0")
+        m = self._register_sample_model(ds_id, version="0.7.0", val_iou=0.35)
+        self.assertEqual(
+            self.client.post(
+                f"/api/v1/governance/models/{m['id']}/promote-production",
+                headers=self._headers("tok-eng"),
+                json={"reason": "Eng cannot promote prod"},
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.patch(
+                "/api/v1/governance/policies/generator_quality_gates",
+                headers=self._headers("tok-eng"),
+                json={"is_enabled": False, "reason": "Eng cannot edit policy"},
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/v1/governance/models",
+                headers=self._headers("tok-rev"),
+                json=MockVersioningAdapter.build_sample_registration_payload(
+                    semantic_version="0.7.1", dataset_id=ds_id
+                ),
+            ).status_code,
+            403,
+        )
+
+    # 10. Generator Missing Metrics, Retriever Missing Verification & ClearML Sync Compensation
+    def test_missing_metrics_and_clearml_sync_compensation(self) -> None:
+        ds_id = self._register_sample_dataset("2.6.0")
+
+        # Generator missing val_canvas_violation_rate cannot promote to staging
+        partial_gen = MockVersioningAdapter.build_sample_registration_payload(
+            semantic_version="0.8.0", dataset_id=ds_id
+        )
+        partial_gen["metrics_summary"] = {"val_iou_mean": 0.35}
+        r_pg = self.client.post("/api/v1/governance/models", headers=self._headers("tok-eng"), json=partial_gen)
+        self.assertEqual(r_pg.status_code, 201)
+        self.assertEqual(
+            self.client.post(
+                f"/api/v1/governance/models/{r_pg.json()['id']}/promote-staging",
+                headers=self._headers("tok-eng"),
+                json={"reason": "Missing overlap/violation metrics"},
+            ).status_code,
+            422,
+        )
+
+        # Retriever missing explicit train_only_verified cannot promote to staging
+        ret_no_flag = MockVersioningAdapter.build_sample_registration_payload(
+            semantic_version="2.6.0", dataset_id=ds_id, model_family="poster_layout_retriever"
+        )
+        ret_no_flag["dependencies_summary"].pop("train_only_verified", None)
+        ret_no_flag["metrics_summary"].pop("train_only_verified", None)
+        r_rn = self.client.post("/api/v1/governance/models", headers=self._headers("tok-eng"), json=ret_no_flag)
+        self.assertEqual(r_rn.status_code, 201)
+        self.assertEqual(
+            self.client.post(
+                f"/api/v1/governance/models/{r_rn.json()['id']}/promote-staging",
+                headers=self._headers("tok-eng"),
+                json={"reason": "Missing train_only_verified"},
+            ).status_code,
+            422,
+        )
+
+        # ClearML compensation test: promote m1 to production, stage m2, fail 2nd ClearML sync -> m1 restored in ClearML & DB
+        m1 = self._register_sample_model(ds_id, version="0.8.1", val_iou=0.31)
+        self.client.post(
+            f"/api/v1/governance/models/{m1['id']}/promote-staging",
+            headers=self._headers("tok-eng"),
+            json={"reason": "Stage m1"},
+        )
+        req1 = self.client.post(
+            f"/api/v1/governance/models/{m1['id']}/approval-requests",
+            headers=self._headers("tok-eng"),
+            json={"target_stage": "production", "request_type": "promotion", "reason": "Approve m1"},
+        ).json()
+        self.client.post(
+            f"/api/v1/governance/approval-requests/{req1['id']}/decide",
+            headers=self._headers("tok-rev"),
+            json={"decision": "approved", "comment": "Approved"},
+        )
+        self.client.post(
+            f"/api/v1/governance/models/{m1['id']}/promote-production",
+            headers=self._headers("tok-admin"),
+            json={"reason": "Prod m1"},
+        )
+
+        m2 = self._register_sample_model(ds_id, version="0.8.2", val_iou=0.35)
+        self.client.post(
+            f"/api/v1/governance/models/{m2['id']}/promote-staging",
+            headers=self._headers("tok-eng"),
+            json={"reason": "Stage m2"},
+        )
+        req2 = self.client.post(
+            f"/api/v1/governance/models/{m2['id']}/approval-requests",
+            headers=self._headers("tok-eng"),
+            json={"target_stage": "production", "request_type": "promotion", "reason": "Approve m2"},
+        ).json()
+        self.client.post(
+            f"/api/v1/governance/approval-requests/{req2['id']}/decide",
+            headers=self._headers("tok-rev"),
+            json={"decision": "approved", "comment": "Approved"},
+        )
+
+        class _FailingSecondSyncAdapter(MockClearMLRegistryAdapter):
+            def __init__(self) -> None:
+                super().__init__()
+                self.calls = 0
+
+            def sync_lifecycle_status(self, *, clearml_model_id: str, target_status: str, model_family: str):
+                self.calls += 1
+                if self.calls == 2:
+                    raise RuntimeError("Simulated ClearML network failure")
+                return super().sync_lifecycle_status(
+                    clearml_model_id=clearml_model_id,
+                    target_status=target_status,
+                    model_family=model_family,
+                )
+
+        failing_adapter = _FailingSecondSyncAdapter()
+        from backend.app.governance.auth import ActorContext
+        from backend.app.governance.constants import ROLE_PERMISSIONS
+        from backend.app.governance.schemas import LifecycleActionRequest
+
+        admin_actor = ActorContext(
+            actor_id="alice-admin",
+            role="admin",
+            auth_source="service_token",
+            permissions=ROLE_PERMISSIONS["admin"],
+            correlation_id="corr-comp-test",
+        )
+        with self.SessionFactory() as db:
+            with self.assertRaises(RuntimeError):
+                ModelService.promote_to_production(
+                    db,
+                    m2["id"],
+                    LifecycleActionRequest(reason="Should compensate"),
+                    admin_actor,
+                    failing_adapter,
+                )
+        # m1 remains production in DB and was compensated back to production in ClearML adapter
+        m1_db = self.client.get(
+            f"/api/v1/governance/models/{m1['id']}", headers=self._headers("tok-view")
+        ).json()
+        self.assertEqual(m1_db["lifecycle_status"], "production")
+        self.assertEqual(failing_adapter._synced_stages[m1["clearml_model_id"]], "production")
+
     # 6. Alembic Upgrade / Downgrade Migration Verification
     def test_alembic_upgrade_and_downgrade(self) -> None:
         with tempfile.TemporaryDirectory() as mig_dir:
@@ -653,6 +947,23 @@ class GovernanceModuleTestCase(unittest.TestCase):
                 "audit_events",
             }
             self.assertTrue(expected.issubset(tables), f"Missing tables: {expected - tables}")
+
+            # Verify all 8 default policies were seeded & SQLite DB trigger blocks raw SQL mutation of audit_events
+            with eng.begin() as conn:
+                pol_count = conn.execute(text("SELECT COUNT(*) FROM governance_policies")).scalar()
+                self.assertEqual(pol_count, 8)
+                conn.execute(
+                    text(
+                        "INSERT INTO audit_events (id, timestamp, actor_id, actor_role, action, entity_type, entity_id, outcome, correlation_id) "
+                        "VALUES ('11111111111111111111111111111111', '2026-11-28T00:00:00Z', 'a', 'admin', 'test', 't', '1', 'success', 'c')"
+                    )
+                )
+            with self.assertRaises(IntegrityError):
+                with eng.begin() as conn:
+                    conn.execute(text("DELETE FROM audit_events"))
+            with self.assertRaises(IntegrityError):
+                with eng.begin() as conn:
+                    conn.execute(text("UPDATE audit_events SET reason = 'tamper'"))
             eng.dispose()
 
             command.downgrade(cfg, "base")

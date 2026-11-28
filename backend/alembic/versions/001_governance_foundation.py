@@ -326,6 +326,29 @@ def upgrade() -> None:
             FOR EACH ROW EXECUTE FUNCTION prevent_audit_events_mutation();
             """
         )
+    elif bind.dialect.name == "sqlite":
+        op.execute("DROP TRIGGER IF EXISTS trg_audit_events_no_update;")
+        op.execute(
+            """
+            CREATE TRIGGER trg_audit_events_no_update
+            BEFORE UPDATE ON audit_events
+            FOR EACH ROW
+            BEGIN
+                SELECT RAISE(ABORT, 'audit_events table is append-only; UPDATE is prohibited');
+            END;
+            """
+        )
+        op.execute("DROP TRIGGER IF EXISTS trg_audit_events_no_delete;")
+        op.execute(
+            """
+            CREATE TRIGGER trg_audit_events_no_delete
+            BEFORE DELETE ON audit_events
+            FOR EACH ROW
+            BEGIN
+                SELECT RAISE(ABORT, 'audit_events table is append-only; DELETE is prohibited');
+            END;
+            """
+        )
 
 
 def downgrade() -> None:
@@ -333,6 +356,9 @@ def downgrade() -> None:
     if bind.dialect.name == "postgresql":
         op.execute("DROP TRIGGER IF EXISTS trg_audit_events_append_only ON audit_events;")
         op.execute("DROP FUNCTION IF EXISTS prevent_audit_events_mutation();")
+    elif bind.dialect.name == "sqlite":
+        op.execute("DROP TRIGGER IF EXISTS trg_audit_events_no_update;")
+        op.execute("DROP TRIGGER IF EXISTS trg_audit_events_no_delete;")
 
     for tbl in (
         "audit_events",

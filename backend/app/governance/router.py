@@ -220,6 +220,17 @@ def promote_to_production(
     return ModelService.to_out(model)
 
 
+@router.post("/models/{model_id}/demote-staging", response_model=GovernedModelOut)
+def demote_to_staging(
+    model_id: str,
+    payload: LifecycleActionRequest,
+    actor: ActorContext = Depends(require_permission("model:demote_production")),
+    db: Session = Depends(get_db),
+):
+    model = ModelService.demote_to_staging(db, model_id, payload, actor, get_clearml_adapter())
+    return ModelService.to_out(model)
+
+
 @router.post("/models/{model_id}/rollback", response_model=GovernedModelOut)
 def rollback_model(
     model_id: str,
@@ -293,6 +304,17 @@ def decide_approval_request(
     db: Session = Depends(get_db),
 ):
     req = ApprovalService.decide_request(db, request_id, payload, actor)
+    return ApprovalService.to_out(req)
+
+
+@router.post("/approval-requests/{request_id}/cancel", response_model=ApprovalRequestOut)
+def cancel_approval_request(
+    request_id: str,
+    payload: LifecycleActionRequest,
+    actor: ActorContext = Depends(require_permission("approval:request")),
+    db: Session = Depends(get_db),
+):
+    req = ApprovalService.cancel_request(db, request_id, reason=payload.reason, actor=actor)
     return ApprovalService.to_out(req)
 
 

@@ -110,6 +110,34 @@ class ApprovalService:
                 f"Model '{model.model_name}' already has a pending approval request ({existing_pending.id})."
             )
 
+        # Invalidate any unconsumed prior approved requests before creating a new request
+        stale_approved = (
+            db.query(ApprovalRequest)
+            .filter(
+                ApprovalRequest.model_id == model.id,
+                ApprovalRequest.status == "approved",
+            )
+            .all()
+        )
+        now = datetime.now(timezone.utc)
+        for old_req in stale_approved:
+            old_req.status = "invalidated"
+            old_req.resolved_at = now
+            AuditService.record(
+                db,
+                actor_id=actor.actor_id,
+                actor_role=actor.role,
+                action="approval.invalidated",
+                entity_type="approval_request",
+                entity_id=str(old_req.id),
+                correlation_id=actor.correlation_id,
+                outcome="success",
+                reason="Superseded by newer approval request.",
+                related_model_version=model.model_name,
+                previous_state={"status": "approved"},
+                new_state={"status": "invalidated"},
+            )
+
         policy_ok, checks, blocking = PolicyService.evaluate_model(
             db, model, target_stage="production", clearml_adapter=clearml_adapter
         )
@@ -155,6 +183,59 @@ class ApprovalService:
                 "automated_check_passed": automated_ok,
                 "regression_detected": shadow_report.get("regression_detected", False),
             },
+        )
+        db.commit()
+        db.refresh(req)
+        return req
+
+    @staticmethod
+    def cancel_request(
+        db: Session,
+        request_id: str,
+        *,
+        reason: str,
+        actor: ActorContext,
+    ) -> ApprovalRequest:
+        req = ApprovalService.get_request(db, request_id)
+        model_name = req.model.model_name if req.model else ""
+
+        if actor.actor_id != req.requested_by and actor.role != "admin":
+            AuditService.record_isolated(
+                db,
+                actor_id=actor.actor_id,
+                actor_role=actor.role,
+                action="auth.access_denied",
+                entity_type="approval_request",
+                entity_id=str(req.id),
+                correlation_id=actor.correlation_id,
+                outcome="denied",
+                reason="Only the original requester or an admin can cancel an approval request.",
+                related_model_version=model_name,
+            )
+            raise PermissionDeniedError(
+                "Only the original requester or an admin can cancel this approval request."
+            )
+
+        if req.status != "pending":
+            raise ConflictError(
+                f"Approval request '{request_id}' is '{req.status}' and cannot be cancelled."
+            )
+
+        req.status = "cancelled"
+        req.resolved_at = datetime.now(timezone.utc)
+        AuditService.record(
+            db,
+            actor_id=actor.actor_id,
+            actor_role=actor.role,
+            action="approval.cancelled",
+            entity_type="approval_request",
+            entity_id=str(req.id),
+            correlation_id=actor.correlation_id,
+            outcome="success",
+            reason=reason,
+            related_model_version=model_name,
+            previous_state={"status": "pending"},
+            new_state={"status": "cancelled"},
         )
         db.commit()
         db.refresh(req)
@@ -225,11 +306,10 @@ class ApprovalService:
             )
 
         if payload.decision == "approved" and not req.automated_check_passed:
-            if not (payload.policy_override and actor.role == "admin"):
-                raise PolicyViolationError(
-                    "Cannot approve request because automated policy or shadow comparison checks failed.",
-                    details=req.automated_check_summary or {},
-                )
+            raise PolicyViolationError(
+                "Cannot approve request because automated policy or shadow comparison checks failed.",
+                details=req.automated_check_summary or {},
+            )
 
         decision_row = ApprovalDecision(
             request_id=req.id,
@@ -237,7 +317,7 @@ class ApprovalService:
             decided_by=actor.actor_id,
             decided_role=actor.role,
             comment=payload.comment.strip(),
-            policy_override=bool(payload.policy_override and actor.role == "admin"),
+            policy_override=False,
         )
         db.add(decision_row)
 
@@ -261,6 +341,59 @@ class ApprovalService:
                 "status": req.status,
                 "policy_override": decision_row.policy_override,
             },
+        )
+        db.commit()
+        db.refresh(req)
+        return req
+
+    @staticmethod
+    def cancel_request(
+        db: Session,
+        request_id: str,
+        *,
+        reason: str,
+        actor: ActorContext,
+    ) -> ApprovalRequest:
+        req = ApprovalService.get_request(db, request_id)
+        model_name = req.model.model_name if req.model else ""
+
+        if actor.actor_id != req.requested_by and actor.role != "admin":
+            AuditService.record_isolated(
+                db,
+                actor_id=actor.actor_id,
+                actor_role=actor.role,
+                action="auth.access_denied",
+                entity_type="approval_request",
+                entity_id=str(req.id),
+                correlation_id=actor.correlation_id,
+                outcome="denied",
+                reason="Only the original requester or an admin can cancel an approval request.",
+                related_model_version=model_name,
+            )
+            raise PermissionDeniedError(
+                "Only the original requester or an admin can cancel this approval request."
+            )
+
+        if req.status != "pending":
+            raise ConflictError(
+                f"Approval request '{request_id}' is '{req.status}' and cannot be cancelled."
+            )
+
+        req.status = "cancelled"
+        req.resolved_at = datetime.now(timezone.utc)
+        AuditService.record(
+            db,
+            actor_id=actor.actor_id,
+            actor_role=actor.role,
+            action="approval.cancelled",
+            entity_type="approval_request",
+            entity_id=str(req.id),
+            correlation_id=actor.correlation_id,
+            outcome="success",
+            reason=reason,
+            related_model_version=model_name,
+            previous_state={"status": "pending"},
+            new_state={"status": "cancelled"},
         )
         db.commit()
         db.refresh(req)

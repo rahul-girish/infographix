@@ -8,6 +8,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -57,6 +60,24 @@ async def governance_exception_handler(request: Request, exc: GovernanceError):
             }
         },
     )
+
+
+@app.exception_handler(RequestValidationError)
+async def governance_validation_exception_handler(request: Request, exc: RequestValidationError):
+    if "/governance" in request.url.path:
+        correlation_id = getattr(request.state, "correlation_id", str(uuid.uuid4()))
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": "Request validation failed.",
+                    "details": {"errors": jsonable_encoder(exc.errors())},
+                    "correlation_id": correlation_id,
+                }
+            },
+        )
+    return await request_validation_exception_handler(request, exc)
 
 app.add_middleware(
     CORSMiddleware,

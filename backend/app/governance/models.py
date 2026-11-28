@@ -19,7 +19,7 @@ from sqlalchemy import (
     Uuid,
     event,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
 from backend.app.db.base import Base
 from backend.app.models.generation_run import JSONVariant
@@ -329,3 +329,16 @@ def _prevent_audit_delete(mapper, connection, target):  # pragma: no cover - def
     from backend.app.governance.exceptions import AuditImmutabilityError
 
     raise AuditImmutabilityError("AuditEvent records are append-only and cannot be deleted.")
+
+
+@event.listens_for(Session, "do_orm_execute")
+def _prevent_audit_bulk_mutation(execute_state):
+    """Block bulk ORM update/delete statements targeting AuditEvent."""
+    if not (execute_state.is_delete or execute_state.is_update):
+        return
+    stmt = execute_state.statement
+    table = getattr(stmt, "table", None)
+    if table is not None and table.name == AuditEvent.__tablename__:
+        from backend.app.governance.exceptions import AuditImmutabilityError
+
+        raise AuditImmutabilityError("AuditEvent records are append-only and cannot be bulk-modified or deleted.")

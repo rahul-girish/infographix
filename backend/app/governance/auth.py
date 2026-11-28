@@ -62,8 +62,22 @@ def verify_hs256_jwt(token: str, secret: str, expected_audience: str = "") -> di
 
     now = time.time()
     exp = payload.get("exp")
-    if exp is not None and float(exp) < now:
-        raise AuthenticationError("JWT has expired.")
+    if exp is not None:
+        try:
+            exp_val = float(exp)
+        except (TypeError, ValueError) as exc:
+            raise AuthenticationError("Invalid JWT 'exp' claim.") from exc
+        if exp_val < now:
+            raise AuthenticationError("JWT has expired.")
+
+    nbf = payload.get("nbf")
+    if nbf is not None:
+        try:
+            nbf_val = float(nbf)
+        except (TypeError, ValueError) as exc:
+            raise AuthenticationError("Invalid JWT 'nbf' claim.") from exc
+        if nbf_val > now:
+            raise AuthenticationError("JWT is not yet valid ('nbf').")
 
     if expected_audience:
         aud = payload.get("aud")

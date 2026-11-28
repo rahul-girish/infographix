@@ -1,7 +1,7 @@
 # Infographix MLOps Governance Module — Implementation & Team Handover Report
 
 **Module Owner:** Rakshith (MLOps Governance)  
-**Git Branch:** `feature/mlops-governance` (uncommitted working tree; not pushed or merged)  
+**Git Branch:** `feature/mlops-governance` (base commit `09de425` pushed; post-audit hardening changes currently uncommitted in working tree)  
 **Date:** 2026-11-28  
 **Related Docs:** [`GOVERNANCE_DECISIONS.md`](GOVERNANCE_DECISIONS.md) | [`GOVERNANCE_SPECIFICATION.md`](GOVERNANCE_SPECIFICATION.md)
 
@@ -51,11 +51,11 @@ All policies are stored in `governance_policies`, seeded via migration `001_gove
 | `require_dataset_lineage` | Global | `blocking` | `{"allow_legacy_fallback": true, "legacy_versions": ["0.1.0"]}` | Blocks registration/promotion without active `dataset_id` FK (unless exempted legacy baseline). |
 | `require_artifact_integrity` | Global | `blocking` | `{"require_sha256": true, "verify_clearml_bundle": true}` | Validates 64-char SHA-256 checksum & invokes `ClearMLRegistryProtocol.verify_model_artifact` on `staging`/`production`. |
 | `require_reproducibility_metadata` | Global | `blocking` | `{"required_fields": ["clearml_training_task_id", "git_commit", "environment_summary"]}` | Requires training task ID, commit SHA, and runtime environment JSON. |
-| `generator_quality_gates` | `poster_layout_generator` | `blocking` | `{"min_val_iou_mean": 0.25, "max_canvas_violation_rate": 0.05, "max_unintended_overlap_mean_area": 0.15}` | Enforced on `staging`/`production`; requires non-empty `metrics_summary` on `candidate`. |
-| `retriever_quality_gates` | `poster_layout_retriever` | `blocking` | `{"require_train_only": true, "min_train_posters": 100}` | Enforced on `staging`/`production`; blocks anti-leakage violations (`train_only_verified=false`). |
-| `production_approval_policy` | Global | `blocking` | `{"require_human_approval": true, "allow_self_approval": false, "single_active_staging": true, "single_active_production": true}` | Requires approved `ApprovalRequest` for `production`, blocks self-approval, and keeps stages unambiguous. |
+| `generator_quality_gates` | `poster_layout_generator` | `blocking` | `{"min_val_iou_mean": 0.25, "max_canvas_violation_rate": 0.05, "max_unintended_overlap_mean_area": 0.15}` | Enforced on `staging`/`production` (all 3 metrics required, fail-closed if missing); requires non-empty `metrics_summary` on `candidate`. |
+| `retriever_quality_gates` | `poster_layout_retriever` | `blocking` | `{"require_train_only": true, "min_train_posters": 100}` | Enforced on `staging`/`production`; fails closed unless `train_only_verified: true` is explicitly provided in `dependencies_summary` or `metrics_summary`. |
+| `production_approval_policy` | Global | `blocking` | `{"require_human_approval": true, "allow_self_approval": false, "single_active_staging": true, "single_active_production": true}` | Requires approved `ApprovalRequest` for `production` (consumed as `executed` on promotion), blocks self-approval, and keeps stages unambiguous. |
 | `shadow_comparison_policy` | Global | `blocking` | `{"require_comparison_when_prod_exists": true, "block_on_iou_regression": true, "max_allowed_iou_drop": 0.0}` | Compares candidate metrics vs. active `production` model; blocks approval if `val_iou_mean` regresses. |
-| `drift_response_policy` | Global | `warning` | `{"block_promotion_on_critical_drift": true, "mark_model_degraded_on_critical": true}` | Marks model `non_compliant` on `critical` drift and blocks `production` promotion. |
+| `drift_response_policy` | Global | `blocking` | `{"block_promotion_on_critical_drift": true, "mark_model_degraded_on_critical": true}` | Marks model `non_compliant` on `critical` drift, blocks `promotion-gate` & `promote-production`, and re-evaluates compliance if drift recovers to `none`. |
 
 ---
 
@@ -65,12 +65,13 @@ Stages match `src/registry/clearml_registry.py`: `("candidate", "staging", "prod
 
 - **Allowed Transitions:**
   - *(New)* → `candidate`: Automated policy check on `POST /models`.
-  - `candidate` → `staging`: Automated policy check (`POST /models/{id}/promote-staging`); auto-archives prior `staging` model in same family when `single_active_staging=true`.
-  - `staging` → `production`: Automated policy check + approved `ApprovalRequest` (`POST /models/{id}/promote-production`); auto-archives prior `production` model in same family and sets `was_ever_production=true`.
-  - `candidate` / `staging` / `production` → `archived`: Mandatory `reason` (`POST /models/{id}/archive`); archiving from `production` requires `admin`. Pending approvals are automatically `invalidated`.
-  - `archived` → `production` **(Controlled Rollback):** Allowed **only** if `was_ever_production=true`, SHA-256 passes verification, `reason` is given, and either an approved `rollback` `ApprovalRequest` exists or an `admin` passes `emergency_override=true` (`POST /models/{id}/rollback`).
+  - `candidate` → `staging`: Automated policy check (`POST /models/{id}/promote-staging`); auto-archives prior `staging` model in same family when `single_active_staging=true`. ClearML sync uses rollback compensation if any step fails.
+  - `staging` → `production`: Automated policy check + approved `ApprovalRequest` (`POST /models/{id}/promote-production`); consumes approval as `executed` (preventing replay), auto-archives prior `production` model in same family, and sets `was_ever_production=true`.
+  - `production` → `staging` **(Emergency Demotion):** `admin` role + mandatory `reason` (`POST /models/{id}/demote-staging`); invalidates open/approved requests so re-promotion requires fresh approval.
+  - `candidate` / `staging` / `production` → `archived`: Mandatory `reason` (`POST /models/{id}/archive`); archiving from `production` requires `admin`. Open/approved requests are automatically `invalidated`.
+  - `archived` → `production` **(Controlled Rollback):** Allowed **only** if `was_ever_production=true`, SHA-256 passes verification, `reason` is given, and either an approved `rollback` `ApprovalRequest` exists (marked `executed`) or an `admin` passes `emergency_override=true` (`POST /models/{id}/rollback`).
 - **Rejected Transitions (`409 Conflict` + audited `model.transition_denied`):** `candidate` → `production`, `archived` → `candidate`, `archived` → `staging`, and same-stage no-ops.
-- **Rejection & Invalidation:** Rejected `ApprovalRequest` decisions prevent promotion. Updating a `governance_policies` rule or archiving a model automatically marks `pending` requests `invalidated`.
+- **Cancellation, Rejection & Invalidation:** Requesters (or `admin`) can cancel `pending` requests via `POST /approval-requests/{id}/cancel`. Rejected `ApprovalRequest` decisions prevent promotion. Updating a `governance_policies` rule or archiving/demoting a model automatically marks open requests `invalidated`.
 
 ---
 
@@ -93,7 +94,7 @@ Stages match `src/registry/clearml_registry.py`: `("candidate", "staging", "prod
 - **Entity:** `audit_events` (`id`, `timestamp`, `actor_id`, `actor_role`, `action`, `entity_type`, `entity_id`, `related_model_version`, `related_dataset_version`, `previous_state`, `new_state`, `reason`, `outcome` [`success` | `denied` | `failed`], `correlation_id`).
 - **Supported Actions:** `dataset.registered`, `dataset.updated`, `model.registered`, `model.metadata_updated`, `model.evaluated`, `model.lifecycle_transition`, `model.promoted_to_production`, `model.rollback`, `model.archived`, `model.transition_denied`, `approval.requested`, `approval.approved`, `approval.rejected`, `approval.cancelled`, `approval.invalidated`, `policy.created`, `policy.updated`, `role.assigned`, `role.revoked`, `drift.event_recorded`, `auth.access_denied`.
 - **Retrieval:** Read-only `GET /api/v1/governance/audit-events` with filters (`action`, `entity_type`, `entity_id`, `actor_id`, `outcome`, `correlation_id`, `related_model_version`, `since`, `until`, `limit`, `offset`).
-- **Integrity & Access:** Zero `PUT`/`PATCH`/`DELETE` routes; SQLAlchemy `before_update` & `before_delete` hooks raise `AuditImmutabilityError`; PostgreSQL migration attaches `trg_audit_events_append_only`; denied/failed operations commit via `AuditService.record_isolated` in an independent session so transaction rollbacks never lose security/denial logs.
+- **Integrity & Access:** Zero `PUT`/`PATCH`/`DELETE` routes; SQLAlchemy `before_update`, `before_delete`, and `Session.do_orm_execute` bulk-mutation hooks raise `AuditImmutabilityError`; migration `001_governance_foundation` attaches `trg_audit_events_append_only` on PostgreSQL and `trg_audit_events_no_update` / `trg_audit_events_no_delete` on SQLite to block direct/bulk SQL mutations; denied/failed operations commit via `AuditService.record_isolated` in an independent session.
 
 ---
 
@@ -144,8 +145,10 @@ Error envelope on `401`/`403`/`404`/`409`/`422`: `{"error": {"code": "...", "mes
 | `POST /models/{model_id}/approval-requests` | Request `production`/`rollback` approval + shadow comparison | `approval:request` |
 | `GET /approval-requests`, `GET /approval-requests/{id}` | List/inspect approval requests & shadow comparison deltas | `governance:read` |
 | `POST /approval-requests/{id}/decide` | Approve or reject (`approved`/`rejected`) | `approval:decide` |
+| `POST /approval-requests/{id}/cancel` | Cancel `pending` request (requester or `admin`) | `approval:request` |
 | `GET /models/{model_id}/promotion-gate` | CI/CD pre-flight eligibility check | `governance:read` |
 | `POST /models/{model_id}/promote-production` | Promote approved `staging` model → `production` | `model:promote_production` |
+| `POST /models/{model_id}/demote-staging` | Emergency demotion `production` → `staging` | `model:demote_production` |
 | `POST /models/{model_id}/rollback` | Controlled `archived` → `production` rollback | `model:rollback` |
 | `POST /models/{model_id}/archive` | Retire model (`admin` required if `production`) | `model:archive_non_prod` |
 | `POST /drift-events`, `GET /drift-events` | Ingest or list drift monitoring runs | `drift:record` / `governance:read` |
@@ -166,7 +169,7 @@ Error envelope on `401`/`403`/`404`/`409`/`422`: `{"error": {"code": "...", "mes
 ### Rahul S RV AI — Model Versioning
 1. **Prerequisite Dataset Reference:** Ensure the training dataset is registered via `POST /api/v1/governance/datasets` (or `POST /datasets/ingest-manifest` pointing to `.mydvc/manifests/*.manifest`) to obtain `dataset_id`.
 2. **Registration Flow:** Register the immutable artifact bundle in ClearML (`src/registry/clearml_registry.py`) to obtain `clearml_model_id`, `artifact_uri`, and `checkpoint_sha256`.
-3. **Sync to Governance:** Call `POST /api/v1/governance/models` with the ClearML ID, `model_family`, `semantic_version`, `clearml_training_task_id`, `git_commit`, `dataset_id`, `environment_summary`, and `metrics_summary`. Governance registers the model in `candidate` and evaluates registration policies.
+3. **Sync to Governance:** Call `POST /api/v1/governance/models` with the ClearML ID, `model_family`, `semantic_version`, `clearml_training_task_id`, `git_commit`, `dataset_id`, `environment_summary`, `dependencies_summary` (for `poster_layout_retriever`, include `n_train_posters`, `train_poster_ids_sha256`, and `train_only_verified: true`), and `metrics_summary` (for `poster_layout_generator`, include `val_iou_mean`, `val_canvas_violation_rate`, and `val_unintended_overlap_mean_area`). Governance registers the model in `candidate` and evaluates registration policies.
 4. **Lifecycle Transitions:** Never call `clearml_registry.set_model_lifecycle_status()` directly in CI/CD—call governance's `/promote-staging`, `/approval-requests`, and `/promote-production` (with `GOV_CLEARML_MODE=clearml`), which validate rules and sync ClearML automatically.
 
 ### Ram Charan RVCE AI — MLOps Dashboard
@@ -257,11 +260,11 @@ Error envelope on `401`/`403`/`404`/`409`/`422`: `{"error": {"code": "...", "mes
 
 ## 5.12 Git and Change Summary
 
-- **Active Branch:** `feature/mlops-governance`
-- **Database Migrations:** `backend/alembic/versions/001_governance_foundation.py` (`upgrade -> head` and `downgrade -> base` verified on SQLite; PostgreSQL trigger guarded by `dialect.name == "postgresql"`).
+- **Active Branch:** `feature/mlops-governance` (initial commit `09de425` pushed; post-audit hardening changes currently uncommitted in working tree)
+- **Database Migrations:** `backend/alembic/versions/001_governance_foundation.py` (`upgrade -> head` and `downgrade -> base` verified on SQLite, including all 8 seeded `governance_policies` and SQLite append-only triggers; PostgreSQL trigger guarded by `dialect.name == "postgresql"`).
 - **Tests Executed:**
-  - Command: `PYDANTIC_DISABLE_PLUGINS=__all__ PYTHONPATH=/home/raksh/projects/infographix .venv/bin/python -u -c "..."` running `backend.tests.test_governance` (7 test methods) and `backend.tests.test_generation_mlops` (4 test methods).
-  - Result: **`Ran 11 tests in 212.259s — OK` (11/11 passed, 0 failures, 0 errors, 0 skipped).**
+  - Command: `PYDANTIC_DISABLE_PLUGINS=__all__ PYTHONPATH=/home/raksh/projects/infographix .venv/bin/python -u -c "..."` running `backend.tests.test_governance` (10 test methods) and `backend.tests.test_generation_mlops` (4 test methods).
+  - Result: **`Ran 14 tests in 1460.429s — OK` (14/14 passed, 0 failures, 0 errors, 0 skipped).**
 - **Known Limitations:**
   - PostgreSQL `BEFORE UPDATE OR DELETE` trigger syntax in `001_governance_foundation.py` is dialect-guarded and was not executed against a live Supabase PostgreSQL instance in offline tests (SQLite ORM hooks were verified instead).
   - `LiveClearMLRegistryAdapter` requires live ClearML credentials and was not exercised against ClearML Cloud during offline tests.

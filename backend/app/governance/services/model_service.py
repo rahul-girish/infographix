@@ -43,23 +43,26 @@ def _parse_uuid(raw_id: str, label: str = "id") -> uuid.UUID:
         raise ValidationError(f"Invalid UUID for '{label}': {raw_id}") from exc
 
 
-def _invalidate_pending_approvals(
+def _invalidate_open_approvals(
     db: Session,
     *,
     model: GovernedModel,
     actor: ActorContext,
     reason: str,
+    include_approved: bool = False,
 ) -> None:
-    pending = (
+    statuses = ["pending", "approved"] if include_approved else ["pending"]
+    open_reqs = (
         db.query(ApprovalRequest)
         .filter(
             ApprovalRequest.model_id == model.id,
-            ApprovalRequest.status == "pending",
+            ApprovalRequest.status.in_(statuses),
         )
         .all()
     )
     now = datetime.now(timezone.utc)
-    for req in pending:
+    for req in open_reqs:
+        prev_status = req.status
         req.status = "invalidated"
         req.resolved_at = now
         AuditService.record(
@@ -73,9 +76,40 @@ def _invalidate_pending_approvals(
             outcome="success",
             reason=reason,
             related_model_version=model.model_name,
-            previous_state={"status": "pending"},
+            previous_state={"status": prev_status},
             new_state={"status": "invalidated"},
         )
+
+
+def _commit_with_clearml_sync(
+    db: Session,
+    clearml_adapter: ClearMLRegistryProtocol,
+    sync_ops: list[tuple[str, str, str, str]],
+) -> None:
+    """Flush DB changes, sync ClearML stages, and compensate ClearML if any step fails."""
+    db.flush()
+    completed: list[tuple[str, str, str]] = []
+    try:
+        for clearml_model_id, prev_stage, target_stage, model_family in sync_ops:
+            clearml_adapter.sync_lifecycle_status(
+                clearml_model_id=clearml_model_id,
+                target_status=target_stage,
+                model_family=model_family,
+            )
+            completed.append((clearml_model_id, prev_stage, model_family))
+        db.commit()
+    except Exception:
+        for cid, prev_stage, fam in reversed(completed):
+            try:
+                clearml_adapter.sync_lifecycle_status(
+                    clearml_model_id=cid,
+                    target_status=prev_stage,
+                    model_family=fam,
+                )
+            except Exception:
+                pass
+        db.rollback()
+        raise
 
 
 class ModelService:
@@ -411,9 +445,8 @@ class ModelService:
         stage: str,
         exclude_model_id: uuid.UUID,
         actor: ActorContext,
-        clearml_adapter: ClearMLRegistryProtocol,
         reason: str,
-    ) -> None:
+    ) -> list[tuple[str, str, str, str]]:
         existing = (
             db.query(GovernedModel)
             .filter(
@@ -424,20 +457,20 @@ class ModelService:
             .all()
         )
         now = datetime.now(timezone.utc)
+        sync_ops: list[tuple[str, str, str, str]] = []
         for old_model in existing:
             prev_stage = old_model.lifecycle_status
             old_model.lifecycle_status = "archived"
             old_model.updated_at = now
-            clearml_adapter.sync_lifecycle_status(
-                clearml_model_id=old_model.clearml_model_id,
-                target_status="archived",
-                model_family=old_model.model_family,
+            sync_ops.append(
+                (old_model.clearml_model_id, prev_stage, "archived", old_model.model_family)
             )
-            _invalidate_pending_approvals(
+            _invalidate_open_approvals(
                 db,
                 model=old_model,
                 actor=actor,
                 reason=f"Model auto-archived on promotion of newer version ({reason}).",
+                include_approved=True,
             )
             AuditService.record(
                 db,
@@ -453,6 +486,7 @@ class ModelService:
                 previous_state={"lifecycle_status": prev_stage},
                 new_state={"lifecycle_status": "archived"},
             )
+        return sync_ops
 
     @staticmethod
     def promote_to_staging(
@@ -490,27 +524,25 @@ class ModelService:
                 details={"blocking_reasons": blocking},
             )
 
+        sync_ops: list[tuple[str, str, str, str]] = []
         _, _, prod_cfg = PolicyService.get_policy_config(db, "production_approval_policy")
         if prod_cfg.get("single_active_staging", True):
-            ModelService._archive_existing_in_stage(
-                db,
-                model_family=model.model_family,
-                stage="staging",
-                exclude_model_id=model.id,
-                actor=actor,
-                clearml_adapter=clearml_adapter,
-                reason=f"Superseded in staging by {model.model_name}",
+            sync_ops.extend(
+                ModelService._archive_existing_in_stage(
+                    db,
+                    model_family=model.model_family,
+                    stage="staging",
+                    exclude_model_id=model.id,
+                    actor=actor,
+                    reason=f"Superseded in staging by {model.model_name}",
+                )
             )
 
         prev_stage = model.lifecycle_status
         model.lifecycle_status = "staging"
         model.compliance_status = "compliant"
         model.updated_at = datetime.now(timezone.utc)
-        clearml_adapter.sync_lifecycle_status(
-            clearml_model_id=model.clearml_model_id,
-            target_status="staging",
-            model_family=model.model_family,
-        )
+        sync_ops.append((model.clearml_model_id, prev_stage, "staging", model.model_family))
 
         AuditService.record(
             db,
@@ -526,7 +558,7 @@ class ModelService:
             previous_state={"lifecycle_status": prev_stage},
             new_state={"lifecycle_status": "staging"},
         )
-        db.commit()
+        _commit_with_clearml_sync(db, clearml_adapter, sync_ops)
         db.refresh(model)
         return model
 
@@ -567,6 +599,7 @@ class ModelService:
         enabled, _, prod_cfg = PolicyService.get_policy_config(db, "production_approval_policy")
         require_human = enabled and bool(prod_cfg.get("require_human_approval", True))
 
+        approved_req: Optional[ApprovalRequest] = None
         if require_human:
             approved_req = (
                 db.query(ApprovalRequest)
@@ -595,15 +628,17 @@ class ModelService:
                     "Production promotion requires an approved ApprovalRequest first."
                 )
 
+        sync_ops: list[tuple[str, str, str, str]] = []
         if prod_cfg.get("single_active_production", True):
-            ModelService._archive_existing_in_stage(
-                db,
-                model_family=model.model_family,
-                stage="production",
-                exclude_model_id=model.id,
-                actor=actor,
-                clearml_adapter=clearml_adapter,
-                reason=f"Superseded in production by {model.model_name}",
+            sync_ops.extend(
+                ModelService._archive_existing_in_stage(
+                    db,
+                    model_family=model.model_family,
+                    stage="production",
+                    exclude_model_id=model.id,
+                    actor=actor,
+                    reason=f"Superseded in production by {model.model_name}",
+                )
             )
 
         prev_stage = model.lifecycle_status
@@ -611,11 +646,9 @@ class ModelService:
         model.was_ever_production = True
         model.compliance_status = "compliant"
         model.updated_at = datetime.now(timezone.utc)
-        clearml_adapter.sync_lifecycle_status(
-            clearml_model_id=model.clearml_model_id,
-            target_status="production",
-            model_family=model.model_family,
-        )
+        if approved_req is not None:
+            approved_req.status = "executed"
+        sync_ops.append((model.clearml_model_id, prev_stage, "production", model.model_family))
 
         AuditService.record(
             db,
@@ -631,7 +664,52 @@ class ModelService:
             previous_state={"lifecycle_status": prev_stage},
             new_state={"lifecycle_status": "production", "was_ever_production": True},
         )
-        db.commit()
+        _commit_with_clearml_sync(db, clearml_adapter, sync_ops)
+        db.refresh(model)
+        return model
+
+    @staticmethod
+    def demote_to_staging(
+        db: Session,
+        model_id: str,
+        payload: LifecycleActionRequest,
+        actor: ActorContext,
+        clearml_adapter: ClearMLRegistryProtocol,
+    ) -> GovernedModel:
+        if "model:demote_production" not in actor.permissions:
+            raise PermissionDeniedError("Demoting a production model requires 'admin' role.")
+        model = ModelService.get_model(db, model_id)
+        ModelService._validate_transition(
+            db, model=model, target_stage="staging", actor=actor, reason=payload.reason
+        )
+
+        prev_stage = model.lifecycle_status
+        model.lifecycle_status = "staging"
+        model.updated_at = datetime.now(timezone.utc)
+        _invalidate_open_approvals(
+            db,
+            model=model,
+            actor=actor,
+            reason=f"Model demoted from production to staging: {payload.reason}",
+            include_approved=True,
+        )
+        sync_ops = [(model.clearml_model_id, prev_stage, "staging", model.model_family)]
+
+        AuditService.record(
+            db,
+            actor_id=actor.actor_id,
+            actor_role=actor.role,
+            action="model.lifecycle_transition",
+            entity_type="model",
+            entity_id=str(model.id),
+            correlation_id=actor.correlation_id,
+            outcome="success",
+            reason=payload.reason,
+            related_model_version=model.model_name,
+            previous_state={"lifecycle_status": prev_stage},
+            new_state={"lifecycle_status": "staging"},
+        )
+        _commit_with_clearml_sync(db, clearml_adapter, sync_ops)
         db.refresh(model)
         return model
 
@@ -711,23 +789,20 @@ class ModelService:
                 "Rollback requires an approved rollback ApprovalRequest or emergency_override=true."
             )
 
-        ModelService._archive_existing_in_stage(
+        sync_ops = ModelService._archive_existing_in_stage(
             db,
             model_family=model.model_family,
             stage="production",
             exclude_model_id=model.id,
             actor=actor,
-            clearml_adapter=clearml_adapter,
             reason=f"Replaced by rollback to {model.model_name}: {payload.reason}",
         )
 
         model.lifecycle_status = "production"
         model.updated_at = datetime.now(timezone.utc)
-        clearml_adapter.sync_lifecycle_status(
-            clearml_model_id=model.clearml_model_id,
-            target_status="production",
-            model_family=model.model_family,
-        )
+        if approved_rollback is not None:
+            approved_rollback.status = "executed"
+        sync_ops.append((model.clearml_model_id, "archived", "production", model.model_family))
 
         AuditService.record(
             db,
@@ -746,7 +821,7 @@ class ModelService:
                 "emergency_override": payload.emergency_override,
             },
         )
-        db.commit()
+        _commit_with_clearml_sync(db, clearml_adapter, sync_ops)
         db.refresh(model)
         return model
 
@@ -780,14 +855,14 @@ class ModelService:
         prev_stage = model.lifecycle_status
         model.lifecycle_status = "archived"
         model.updated_at = datetime.now(timezone.utc)
-        clearml_adapter.sync_lifecycle_status(
-            clearml_model_id=model.clearml_model_id,
-            target_status="archived",
-            model_family=model.model_family,
+        _invalidate_open_approvals(
+            db,
+            model=model,
+            actor=actor,
+            reason=f"Model archived: {payload.reason}",
+            include_approved=True,
         )
-        _invalidate_pending_approvals(
-            db, model=model, actor=actor, reason=f"Model archived: {payload.reason}"
-        )
+        sync_ops = [(model.clearml_model_id, prev_stage, "archived", model.model_family)]
 
         AuditService.record(
             db,
@@ -803,6 +878,6 @@ class ModelService:
             previous_state={"lifecycle_status": prev_stage},
             new_state={"lifecycle_status": "archived"},
         )
-        db.commit()
+        _commit_with_clearml_sync(db, clearml_adapter, sync_ops)
         db.refresh(model)
         return model
