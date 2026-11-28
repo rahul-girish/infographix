@@ -66,6 +66,8 @@ class UserContentItem:
     aspect_source: str = "unavailable"  # 'intrinsic_asset' or 'unavailable'
     table_rows: int = 0
     table_cols: int = 0
+    section_group_norm: float = 0.0
+    in_cat_rank_norm: float = 0.5
     priority: float = 1.0
     shuffled_order_idx: int = 0  # Decoupled from ground-truth reading order
     sample_text: str = ""
@@ -84,8 +86,8 @@ class UserContentItem:
           - Dim 11: has_text_length binary flag (1.0 or 0.0)
           - Dim 12: aspect_ratio if has_aspect_ratio else 1.0
           - Dim 13: has_aspect_ratio binary flag (1.0 or 0.0)
-          - Dim 14: table_rows / 10.0
-          - Dim 15: table_cols / 10.0
+          - Dim 14: section_group_norm in [0, 1] (document section membership)
+          - Dim 15: in_cat_rank_norm in [0, 1] (within-category document order rank)
           - Dim 16: priority (0.1 to 1.0)
           - Dim 17: shuffled_order_idx / total_items if include_order_index else 0.0
         """
@@ -111,8 +113,8 @@ class UserContentItem:
             has_txt,
             asp_val,
             has_asp,
-            float(self.table_rows / 10.0),
-            float(self.table_cols / 10.0),
+            float(self.section_group_norm),
+            float(self.in_cat_rank_norm),
             float(self.priority),
             order_val,
         ], dtype=np.float32)
@@ -445,17 +447,33 @@ def build_synthetic_request_and_sample(
     # Sort ground-truth target elements in true visual reading order (top-to-bottom, left-to-right)
     p_els = p_els.sort_values(by=["y0", "x0"]).reset_index(drop=True)
 
-    # 1. Attempt PDF Text & Intrinsic Image Extraction from PDF assets
+    # 1. Use pre-extracted offline PDF content columns when available; otherwise fall back to PDF extraction
+    has_preextracted_content = (
+        "has_text_length" in p_els.columns
+        and "word_count" in p_els.columns
+        and "has_aspect_ratio" in p_els.columns
+    )
+    has_preextracted_structure = (
+        "in_cat_rank_norm" in p_els.columns and "section_group_norm" in p_els.columns
+    )
+
     matched_text_lookup: dict[int, dict[str, Any]] = {}
     intrinsic_images: list[dict[str, Any]] = []
 
-    if use_pdf_extraction and pdf_base_dir is not None:
+    if not has_preextracted_content and use_pdf_extraction and pdf_base_dir is not None:
         pdf_path = get_pdf_path_for_poster_id(pid, split=source_split, pdf_base_dir=pdf_base_dir)
         if pdf_path is not None and pdf_path.exists():
             pdf_blocks = extract_pdf_blocks_via_pdftotext(pdf_path)
             if pdf_blocks:
                 matched_text_lookup = match_pdf_text_to_elements(pdf_blocks, p_els)
             intrinsic_images = extract_intrinsic_image_aspect_ratios(pdf_path)
+
+    # Fallback within-category rank if not pre-extracted in elements.parquet
+    cat_counts_fallback: dict[str, int] = {}
+    cat_seen_fallback: dict[str, int] = {}
+    if not has_preextracted_structure:
+        for s in p_els["category_slug"].astype(str).str.lower():
+            cat_counts_fallback[s] = cat_counts_fallback.get(s, 0) + 1
 
     # 2. Build Unordered Content Demands & Supervision Targets
     raw_content_items: list[UserContentItem] = []
@@ -485,44 +503,60 @@ def build_synthetic_request_and_sample(
         target_reading_orders_list.append(true_reading_idx)
 
         # Content Features (Zero leakage from target coordinates or box area)
-        if eid in matched_text_lookup:
-            tinfo = matched_text_lookup[eid]
-            w_cnt = float(tinfo["word_count"])
-            c_cnt = float(tinfo["char_count"])
-            has_txt = True
-            txt_src = "pdf_extracted"
-            snippet = tinfo["sample_text"]
-        else:
-            # Explicit missing value: NO geometric box area estimation!
-            w_cnt = 0.0
-            c_cnt = 0.0
-            has_txt = False
-            txt_src = "unavailable"
+        if has_preextracted_content:
+            has_txt = bool(el["has_text_length"])
+            w_cnt = float(el["word_count"]) if has_txt else 0.0
+            c_cnt = float(el["char_count"]) if has_txt else 0.0
+            txt_src = "pdf_extracted" if has_txt else "unavailable"
             snippet = ""
 
-        # Figures: Check intrinsic image assets from PDF
-        if cslug in ("figure", "logo"):
-            if image_idx_counter < len(intrinsic_images):
-                img_data = intrinsic_images[image_idx_counter]
-                asp_val = float(np.clip(img_data["aspect_ratio"], 0.25, 4.0))
-                has_asp = True
-                asp_src = "intrinsic_asset"
-                image_idx_counter += 1
+            has_asp = bool(el["has_aspect_ratio"])
+            asp_val = float(el["intrinsic_aspect_ratio"]) if has_asp else 1.0
+            asp_src = "intrinsic_asset" if has_asp else "unavailable"
+        else:
+            if eid in matched_text_lookup:
+                tinfo = matched_text_lookup[eid]
+                w_cnt = float(tinfo["word_count"])
+                c_cnt = float(tinfo["char_count"])
+                has_txt = True
+                txt_src = "pdf_extracted"
+                snippet = tinfo["sample_text"]
             else:
-                # Intrinsic asset unavailable: mark explicitly missing
+                w_cnt = 0.0
+                c_cnt = 0.0
+                has_txt = False
+                txt_src = "unavailable"
+                snippet = ""
+
+            if cslug in ("figure", "logo"):
+                if image_idx_counter < len(intrinsic_images):
+                    img_data = intrinsic_images[image_idx_counter]
+                    asp_val = float(np.clip(img_data["aspect_ratio"], 0.25, 4.0))
+                    has_asp = True
+                    asp_src = "intrinsic_asset"
+                    image_idx_counter += 1
+                else:
+                    asp_val = 1.0
+                    has_asp = False
+                    asp_src = "unavailable"
+            else:
                 asp_val = 1.0
                 has_asp = False
                 asp_src = "unavailable"
-        else:
-            asp_val = 1.0
-            has_asp = False
-            asp_src = "unavailable"
 
-        # Tables: user metadata specification (independent of target box)
+        if has_preextracted_structure:
+            sec_grp_val = float(el["section_group_norm"])
+            in_cat_val = float(el["in_cat_rank_norm"])
+        else:
+            sec_grp_val = 0.0
+            c_tot = cat_counts_fallback.get(cslug, 1)
+            c_pos = cat_seen_fallback.get(cslug, 0)
+            cat_seen_fallback[cslug] = c_pos + 1
+            in_cat_val = 0.5 if c_tot <= 1 else float(c_pos) / float(c_tot - 1)
+
         t_rows = 4 if cslug == "table" else 0
         t_cols = 3 if cslug == "table" else 0
 
-        # Initial content item with dummy index (will be decoupled via shuffle)
         item = UserContentItem(
             item_id=f"item_{eid}",
             category_slug=cslug,
@@ -536,6 +570,8 @@ def build_synthetic_request_and_sample(
             aspect_source=asp_src,
             table_rows=t_rows,
             table_cols=t_cols,
+            section_group_norm=sec_grp_val,
+            in_cat_rank_norm=in_cat_val,
             priority=1.0 if cslug in ("title", "section") else 0.8,
             shuffled_order_idx=0,
             sample_text=snippet,

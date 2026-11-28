@@ -14,12 +14,50 @@ Evaluates:
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
+import pandas as pd
+from scipy.optimize import linear_sum_assignment
 import scipy.stats as stats
 import torch
 
 from src.neural_layout.losses import box_xywh_to_xyxy, compute_giou
+
+
+def _pairwise_iou_matrix(boxes_a: torch.Tensor, boxes_b: torch.Tensor) -> torch.Tensor:
+    """Compute [N, M] pairwise IoU between two [x0, y0, w, h] box tensors."""
+    a_xyxy = box_xywh_to_xyxy(boxes_a)
+    b_xyxy = box_xywh_to_xyxy(boxes_b)
+    ix0 = torch.max(a_xyxy[:, None, 0], b_xyxy[None, :, 0])
+    iy0 = torch.max(a_xyxy[:, None, 1], b_xyxy[None, :, 1])
+    ix1 = torch.min(a_xyxy[:, None, 2], b_xyxy[None, :, 2])
+    iy1 = torch.min(a_xyxy[:, None, 3], b_xyxy[None, :, 3])
+    inter = torch.clamp(ix1 - ix0, min=0.0) * torch.clamp(iy1 - iy0, min=0.0)
+    area_a = torch.clamp(boxes_a[:, 2], min=0.0) * torch.clamp(boxes_a[:, 3], min=0.0)
+    area_b = torch.clamp(boxes_b[:, 2], min=0.0) * torch.clamp(boxes_b[:, 3], min=0.0)
+    union = area_a[:, None] + area_b[None, :] - inter
+    return inter / torch.clamp(union, min=1e-6)
+
+
+def compute_within_category_hungarian_ious(
+    pred_boxes: torch.Tensor,
+    target_boxes: torch.Tensor,
+    cat_ids: torch.Tensor,
+) -> list[float]:
+    """Compute optimal within-category bipartite-matched IoUs for a single poster."""
+    matched_ious: list[float] = []
+    for cat_val in torch.unique(cat_ids).tolist():
+        idx = torch.nonzero(cat_ids == cat_val, as_tuple=True)[0]
+        if len(idx) == 0:
+            continue
+        p_sub = pred_boxes[idx]
+        t_sub = target_boxes[idx]
+        iou_mat = _pairwise_iou_matrix(p_sub, t_sub).cpu().numpy()
+        row_ind, col_ind = linear_sum_assignment(1.0 - iou_mat)
+        for r, c in zip(row_ind, col_ind):
+            matched_ious.append(float(iou_mat[r, c]))
+    return matched_ious
 
 
 class LayoutEvaluator:
@@ -52,6 +90,7 @@ class LayoutEvaluator:
         B = pred_boxes.shape[0]
 
         ious_list: list[float] = []
+        hungarian_ious_list: list[float] = []
         gious_list: list[float] = []
         center_err_list: list[float] = []
         wh_err_list: list[float] = []
@@ -104,6 +143,12 @@ class LayoutEvaluator:
 
             ious_list.extend(sample_ious.tolist())
             gious_list.extend(giou_vals.tolist())
+
+            # 1b. Within-category Hungarian-matched IoU (permutation-invariant set alignment)
+            cat_ids = torch.argmax(c_feats[:, :9], dim=-1)
+            hungarian_ious_list.extend(
+                compute_within_category_hungarian_ious(p_boxes, t_boxes, cat_ids)
+            )
 
             p_cx = p_boxes[:, 0] + 0.5 * p_boxes[:, 2]
             p_cy = p_boxes[:, 1] + 0.5 * p_boxes[:, 3]
@@ -211,6 +256,7 @@ class LayoutEvaluator:
 
         return {
             "iou_mean": float(np.mean(ious_list)) if ious_list else 0.0,
+            "hungarian_iou_mean": float(np.mean(hungarian_ious_list)) if hungarian_ious_list else 0.0,
             "giou_mean": float(np.mean(gious_list)) if gious_list else 0.0,
             "center_l1_error": float(np.mean(center_err_list)) if center_err_list else 0.0,
             "wh_l1_error": float(np.mean(wh_err_list)) if wh_err_list else 0.0,
@@ -230,3 +276,149 @@ class LayoutEvaluator:
             "template_divergence_iou": float(np.mean(template_divergence_ious)) if template_divergence_ious else 0.0,
             "template_baseline_gt_iou": float(np.mean(template_vs_gt_ious)) if template_vs_gt_ious else 0.0,
         }
+
+
+def evaluate_category_mean_baseline(
+    train_elements_df: pd.DataFrame,
+    eval_dataset: Any,
+    max_samples: int | None = None,
+) -> dict[str, float]:
+    """Trivial baseline: predict each category's training-set mean box and majority column."""
+    from src.neural_layout.dataset import KNOWN_CATEGORIES, collate_layout_batch
+
+    cat_to_idx = {c: i for i, c in enumerate(KNOWN_CATEGORIES)}
+    df = train_elements_df.copy()
+    if "category_slug" in df.columns:
+        cat_col = df["category_slug"].astype(str).str.lower()
+    elif "category_name" in df.columns:
+        cat_col = df["category_name"].astype(str).str.lower()
+    else:
+        cat_col = pd.Series(["unknown"] * len(df))
+
+    x_col = "x0" if "x0" in df.columns else "x0_norm"
+    y_col = "y0" if "y0" in df.columns else "y0_norm"
+    w_col = "w" if "w" in df.columns else "w_norm"
+    h_col = "h" if "h" in df.columns else "h_norm"
+
+    mean_box_by_cat: dict[int, list[float]] = {}
+    global_mean_box = [
+        float(df[x_col].mean()),
+        float(df[y_col].mean()),
+        float(df[w_col].mean()),
+        float(df[h_col].mean()),
+    ]
+    for cat_name, cat_idx in cat_to_idx.items():
+        sub = df[cat_col == cat_name]
+        if len(sub) > 0:
+            mean_box_by_cat[cat_idx] = [
+                float(sub[x_col].mean()),
+                float(sub[y_col].mean()),
+                float(sub[w_col].mean()),
+                float(sub[h_col].mean()),
+            ]
+        else:
+            mean_box_by_cat[cat_idx] = global_mean_box
+
+    # Majority column class across training elements
+    if "column_id" in df.columns:
+        maj_col = int(df["column_id"].clip(0, 4).mode().iloc[0])
+    else:
+        maj_col = 0
+
+    evaluator = LayoutEvaluator()
+    n = len(eval_dataset) if max_samples is None else min(len(eval_dataset), max_samples)
+    samples = [eval_dataset[i] for i in range(n)]
+    batch = collate_layout_batch(samples)
+
+    B, M, _ = batch["content_feats"].shape
+    pred_boxes = torch.zeros((B, M, 4), dtype=torch.float32)
+    pred_col_logits = torch.zeros((B, M, 5), dtype=torch.float32)
+    pred_col_logits[:, :, maj_col] = 5.0
+    pred_orders = torch.linspace(0.0, 1.0, steps=M, dtype=torch.float32).unsqueeze(0).expand(B, M).clone()
+    pred_macro = torch.zeros((B, 5), dtype=torch.float32)
+    pred_macro[:, 2] = 5.0
+
+    cat_ids = torch.argmax(batch["content_feats"][:, :, :9], dim=-1)
+    for b in range(B):
+        for m in range(M):
+            c_idx = int(cat_ids[b, m].item())
+            pred_boxes[b, m] = torch.tensor(mean_box_by_cat.get(c_idx, global_mean_box), dtype=torch.float32)
+
+    preds = {
+        "pred_boxes": pred_boxes,
+        "pred_column_logits": pred_col_logits,
+        "pred_order_scores": pred_orders,
+        "pred_macro_column_logits": pred_macro,
+    }
+    return evaluator.evaluate_batch(preds, batch)
+
+
+def evaluate_template_copy_baseline(
+    eval_dataset: Any,
+    max_samples: int | None = None,
+) -> dict[str, float]:
+    """Category-matched template copy baseline: assign each item the next same-category slot from its retrieved template."""
+    from src.neural_layout.dataset import collate_layout_batch
+
+    evaluator = LayoutEvaluator()
+    n = len(eval_dataset) if max_samples is None else min(len(eval_dataset), max_samples)
+    samples = [eval_dataset[i] for i in range(n)]
+    batch = collate_layout_batch(samples)
+
+    B, M, _ = batch["content_feats"].shape
+    pred_boxes = torch.zeros((B, M, 4), dtype=torch.float32)
+    pred_col_logits = torch.zeros((B, M, 5), dtype=torch.float32)
+    pred_orders = torch.zeros((B, M), dtype=torch.float32)
+    pred_macro = torch.zeros((B, 5), dtype=torch.float32)
+    pred_macro[:, 2] = 5.0
+
+    content_cats = torch.argmax(batch["content_feats"][:, :, :9], dim=-1)
+    tmpl_cats = torch.argmax(batch["template_feats"][:, :, :9], dim=-1)
+    tmpl_boxes = batch["template_feats"][:, :, 9:13]
+    tmpl_mask = batch["template_mask"]
+    content_mask = batch["content_mask"]
+
+    for b in range(B):
+        k_valid = torch.nonzero(tmpl_mask[b], as_tuple=True)[0]
+        slots_by_cat: dict[int, list[torch.Tensor]] = {}
+        all_slots: list[torch.Tensor] = []
+        for k in k_valid.tolist():
+            c_k = int(tmpl_cats[b, k].item())
+            box_k = tmpl_boxes[b, k]
+            slots_by_cat.setdefault(c_k, []).append(box_k)
+            all_slots.append(box_k)
+        cat_cursor: dict[int, int] = {}
+
+        # Sort valid content items by (section_group_norm, in_cat_rank_norm) when present
+        m_valid = torch.nonzero(content_mask[b], as_tuple=True)[0].tolist()
+        m_valid_sorted = sorted(
+            m_valid,
+            key=lambda idx: (
+                float(batch["content_feats"][b, idx, 14].item()),
+                float(batch["content_feats"][b, idx, 15].item()),
+            ),
+        )
+        for rank_i, m in enumerate(m_valid_sorted):
+            c_m = int(content_cats[b, m].item())
+            pool = slots_by_cat.get(c_m) or all_slots
+            if pool:
+                cur = cat_cursor.get(c_m, 0)
+                chosen = pool[cur % len(pool)]
+                cat_cursor[c_m] = cur + 1
+                pred_boxes[b, m] = chosen
+                cx = float(chosen[0].item() + 0.5 * chosen[2].item())
+                est_col = min(4, max(0, int(cx * 3)))
+                pred_col_logits[b, m, est_col] = 5.0
+                pred_orders[b, m] = float(chosen[1].item()) + float(est_col)
+            else:
+                pred_boxes[b, m] = torch.tensor([0.1, 0.1, 0.3, 0.2], dtype=torch.float32)
+                pred_col_logits[b, m, 0] = 5.0
+                pred_orders[b, m] = float(rank_i) / max(1, len(m_valid_sorted))
+
+    preds = {
+        "pred_boxes": pred_boxes,
+        "pred_column_logits": pred_col_logits,
+        "pred_order_scores": pred_orders,
+        "pred_macro_column_logits": pred_macro,
+    }
+    return evaluator.evaluate_batch(preds, batch)

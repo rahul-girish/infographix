@@ -31,6 +31,7 @@ from src.adaptation.adaptation_evaluation import compute_pairwise_overlap_area
 from src.features.request_schema import ContentBlockDemand, PosterRequest
 from src.neural_layout.dataset import CATEGORY_TO_IDX, TemplateSlotItem, UserContentItem
 from src.neural_layout.layout_model import TemplateConditionedLayoutModel
+from src.neural_layout.postprocess import NeuralLayoutRefiner, RefinerConfig
 
 try:
     from src.neural_layout.postprocess import NeuralLayoutRefiner, RefinerConfig
@@ -319,6 +320,8 @@ class InferenceManager:
         self.ready: bool = False
         self.init_error: str | None = None
         self.default_engine: str = "neural"
+        self.neural_use_refiner: bool = True
+        self.neural_refiner: NeuralLayoutRefiner = NeuralLayoutRefiner(RefinerConfig())
         self.torch_device: str = "cpu"
         self.use_column_grid_refiner: bool = True
 
@@ -686,6 +689,47 @@ class InferenceManager:
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         assert self.neural_model is not None
 
+        # Resolve whether the loaded checkpoint was trained with order index enabled
+        manifest = getattr(self.neural_model, "registry_manifest", None) or {}
+        training_cfg = manifest.get("training_config") or {}
+        if "include_order_index" in training_cfg:
+            include_order_index = bool(training_cfg["include_order_index"])
+        else:
+            is_modern = bool(getattr(self.neural_model, "use_anchor_conditioning", False)) or (
+                getattr(self.neural_model, "bbox_parameterization", "independent") == "bounded"
+            )
+            include_order_index = not is_modern
+
+        # Compute leak-free structural identity features matching src/neural_layout/dataset.py:
+        #   - section_group_norm (dim 14): shared across heading/body or figure/caption in same section
+        #   - in_cat_rank_norm   (dim 15): within-category document order rank in [0, 1]
+        block_cats: list[str] = [
+            blk.scipost_category if blk.scipost_category in CATEGORY_TO_IDX else "text"
+            for blk in req.blocks
+        ]
+        cat_totals: dict[str, int] = {}
+        for cat in block_cats:
+            cat_totals[cat] = cat_totals.get(cat, 0) + 1
+        cat_seen: dict[str, int] = {}
+
+        raw_groups: list[int] = []
+        cur_group = 0
+        block_to_group: dict[str, int] = {}
+        for blk, cat in zip(req.blocks, block_cats):
+            if cat in ("title", "author_info"):
+                grp = 0
+            elif blk.must_be_adjacent_to and blk.must_be_adjacent_to in block_to_group:
+                grp = block_to_group[blk.must_be_adjacent_to]
+            else:
+                if cat == "section":
+                    cur_group += 1
+                elif cur_group == 0:
+                    cur_group = 1
+                grp = cur_group
+            raw_groups.append(grp)
+            block_to_group[blk.block_id] = grp
+        max_group = max(raw_groups) if raw_groups else 0
+
         total_items = max(1, len(req.blocks))
         content_vecs: list[np.ndarray] = []
         # Compute leak-free document-order section_group_norm and in_cat_rank_norm
@@ -726,6 +770,8 @@ class InferenceManager:
                 aspect_source="metadata" if blk.aspect_ratio is not None else "unavailable",
                 table_rows=int(blk.table_rows or 0),
                 table_cols=int(blk.table_cols or 0),
+                section_group_norm=sec_group_norm,
+                in_cat_rank_norm=in_cat_rank,
                 priority=float(blk.priority),
                 shuffled_order_idx=idx,
             )
@@ -742,26 +788,22 @@ class InferenceManager:
         tmpl_vecs = [s.to_feature_vector() for s in tmpl_slots]
         slot_source = f"canonical_{k_cols}col"
 
+        content_feats_np = np.stack(content_vecs).astype(np.float32)
         device = torch.device(self.torch_device)
-        content_tensor = torch.tensor(np.stack(content_vecs), dtype=torch.float32, device=device).unsqueeze(0)
+        content_tensor = torch.tensor(content_feats_np, dtype=torch.float32, device=device).unsqueeze(0)
         template_tensor = torch.tensor(np.stack(tmpl_vecs), dtype=torch.float32, device=device).unsqueeze(0)
         content_mask = torch.ones((1, len(content_vecs)), dtype=torch.bool, device=device)
         template_mask = torch.ones((1, len(tmpl_vecs)), dtype=torch.bool, device=device)
 
         with torch.inference_mode():
             preds = self.neural_model(content_tensor, template_tensor, content_mask, template_mask)
-            if self.use_column_grid_refiner and self.refiner is not None:
-                preds = self.refiner.refine_batch(
-                    preds,
-                    {"content_feats": content_tensor, "content_mask": content_mask},
-                )
 
         pred_boxes = preds["pred_boxes"][0].cpu().numpy()
         pred_macro = int(torch.argmax(preds["pred_macro_column_logits"][0]).item()) + 1
 
         raw_elements: list[dict[str, Any]] = []
         for idx, blk in enumerate(req.blocks):
-            x0, y0, wn, hn = [float(v) for v in pred_boxes[idx]]
+            x0, y0, wn, hn = [float(v) for v in final_boxes[idx]]
             raw_elements.append({
                 "id": blk.block_id,
                 "type": blk.scipost_category,
@@ -774,7 +816,6 @@ class InferenceManager:
             "num_content_blocks": len(req.blocks),
             "num_template_slots": len(tmpl_vecs),
             "template_slot_source": slot_source,
-            "column_grid_refined": self.use_column_grid_refiner,
         }
         return raw_elements, metrics
 

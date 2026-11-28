@@ -155,7 +155,7 @@ class LayoutDecoder(nn.Module):
             self.bbox_head = nn.Sequential(
                 nn.Linear(d_model, d_model),
                 nn.GELU(),
-                nn.Dropout(dropout),
+                nn.Dropout(0.0),
                 nn.Linear(d_model, 4),
             )
 

@@ -17,6 +17,7 @@ from inference_service.app.routes.health import router as health_router
 from inference_service.app.routes.metrics import router as metrics_router
 from inference_service.app.routes.models import router as models_router
 from inference_service.app.services.inference_manager import InferenceManager
+from inference_service.app.services.keepalive import PeerKeepAlive
 from inference_service.app.services.memory_profiler import MemoryTracker
 from inference_service.app.services.metrics import InferenceMetrics
 

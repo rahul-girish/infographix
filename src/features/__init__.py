@@ -27,6 +27,11 @@ from src.features.helpers import (
     classify_aspect_orientation,
     compute_orientation,
 )
+from src.features.pdf_content import (
+    PDF_CONTENT_COLUMNS,
+    compute_document_structure_features,
+    enrich_elements_with_pdf_content,
+)
 from src.features.pipeline import (
     build_pipeline_report,
     run_feature_pipeline_v2,
@@ -64,6 +69,9 @@ __all__ = [
     "generate_feature_schema_metadata",
     "export_v2_tables_and_metadata",
     "export_legacy_v1_compatible_parquets",
+    "PDF_CONTENT_COLUMNS",
+    "compute_document_structure_features",
+    "enrich_elements_with_pdf_content",
     "build_pipeline_report",
     "run_feature_pipeline_v2",
     "run_pipeline_from_config",

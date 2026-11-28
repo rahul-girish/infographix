@@ -135,6 +135,103 @@ def render_tri_layout_comparison(
     return fig
 
 
+def render_five_panel_comparison(
+    target_boxes: np.ndarray,
+    target_categories: list[str],
+    target_orders: list[int] | None,
+    template_boxes: np.ndarray,
+    template_categories: list[str],
+    neural_boxes: np.ndarray,
+    neural_categories: list[str],
+    neural_orders: list[int] | None,
+    refined_boxes: np.ndarray,
+    refined_categories: list[str],
+    refined_orders: list[int] | None,
+    adapter_boxes: np.ndarray | None,
+    adapter_categories: list[str] | None,
+    poster_id: int | str,
+    template_id: int | str,
+    save_path: Path | None = None,
+    title_suffix: str = "",
+) -> plt.Figure:
+    """Render 5-panel comparison: GT, Retrieved Template, Raw Neural, Column-Grid Refined Neural, and LayoutAdapter + HiGHS."""
+    fig, axes = plt.subplots(1, 5, figsize=(30, 7))
+    fig.patch.set_facecolor("#f8f9fa")
+
+    panels = [
+        ("1. Ground Truth", target_boxes, target_categories, target_orders, axes[0], f"Poster #{poster_id}"),
+        ("2. Retrieved Template", template_boxes, template_categories, None, axes[1], f"Template #{template_id}"),
+        ("3. Raw Neural", neural_boxes, neural_categories, neural_orders, axes[2], f"Raw {title_suffix}".strip()),
+        ("4. Refined Neural", refined_boxes, refined_categories, refined_orders, axes[3], "Column-Grid (0-Overlap)"),
+        (
+            "5. LayoutAdapter + HiGHS",
+            adapter_boxes if adapter_boxes is not None else np.zeros((0, 4)),
+            adapter_categories or [],
+            None,
+            axes[4],
+            "LP Baseline" if adapter_boxes is not None else "Unavailable",
+        ),
+    ]
+
+    for title, boxes, cats, orders, ax, subtitle in panels:
+        ax.set_facecolor("#ffffff")
+        ax.set_xlim(-0.04, 1.04)
+        ax.set_ylim(1.04, -0.04)
+        ax.set_aspect("equal")
+        ax.set_title(f"{title}\n{subtitle}", fontsize=11, fontweight="bold", pad=8)
+
+        ax.add_patch(
+            patches.Rectangle((0, 0), 1.0, 1.0, linewidth=2, edgecolor="#2b2b2b", facecolor="none")
+        )
+
+        for i, box in enumerate(boxes):
+            x0, y0, w, h = [float(v) for v in box[:4]]
+            cat = cats[i] if i < len(cats) else "text"
+            color = CATEGORY_COLORS.get(cat, "#7f7f7f")
+            ax.add_patch(
+                patches.Rectangle(
+                    (x0, y0), max(1e-3, w), max(1e-3, h),
+                    linewidth=1.3, edgecolor=color, facecolor=color, alpha=0.35,
+                )
+            )
+            label = f"{orders[i]}:{cat[:4]}" if (orders is not None and i < len(orders)) else cat[:5]
+            if w > 0.05 and h > 0.02:
+                ax.text(
+                    x0 + w / 2.0,
+                    y0 + h / 2.0,
+                    label,
+                    ha="center",
+                    va="center",
+                    fontsize=6.5,
+                    fontweight="bold",
+                    color="#1a1a1a",
+                    bbox=dict(boxstyle="square,pad=0.08", fc="#ffffff", ec="none", alpha=0.6),
+                )
+
+        ax.grid(True, linestyle="--", alpha=0.3, color="#cccccc")
+        ax.set_xlabel("Normalized X")
+        ax.set_ylabel("Normalized Y")
+
+    legend_elements = [
+        patches.Patch(facecolor=color, edgecolor="#333", alpha=0.6, label=cat)
+        for cat, color in CATEGORY_COLORS.items()
+    ]
+    fig.legend(
+        handles=legend_elements,
+        loc="lower center",
+        ncol=len(CATEGORY_COLORS),
+        fontsize=9,
+        bbox_to_anchor=(0.5, -0.04),
+    )
+
+    plt.tight_layout()
+    if save_path is not None:
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(save_path, dpi=180, bbox_inches="tight")
+
+    return fig
+
+
 def render_training_curves(
     history: dict[str, list[float]],
     save_path: Path | None = None,
@@ -190,6 +287,102 @@ def render_training_curves(
     return fig
 
 
+def render_five_panel_comparison(
+    target_boxes: np.ndarray,
+    target_categories: list[str],
+    target_orders: list[int] | None,
+    template_boxes: np.ndarray,
+    template_categories: list[str],
+    neural_boxes: np.ndarray,
+    neural_categories: list[str],
+    neural_orders: list[int] | None,
+    refined_boxes: np.ndarray,
+    refined_categories: list[str],
+    refined_orders: list[int] | None,
+    adapter_boxes: np.ndarray | None,
+    adapter_categories: list[str] | None,
+    poster_id: int | str,
+    template_id: int | str,
+    save_path: Path | None = None,
+    title_suffix: str = "",
+) -> plt.Figure:
+    """Render 5-panel comparison: GT, Retrieved Template, Raw Neural, Column-Grid Refined Neural, and LayoutAdapter + HiGHS."""
+    fig, axes = plt.subplots(1, 5, figsize=(30, 7))
+    fig.patch.set_facecolor("#f8f9fa")
+
+    panels = [
+        ("1. Ground Truth", target_boxes, target_categories, target_orders, axes[0], f"Poster #{poster_id}"),
+        ("2. Retrieved Template", template_boxes, template_categories, None, axes[1], f"Template #{template_id}"),
+        ("3. Raw Neural", neural_boxes, neural_categories, neural_orders, axes[2], f"Raw {title_suffix}".strip()),
+        ("4. Refined Neural", refined_boxes, refined_categories, refined_orders, axes[3], "Column-Grid (0-Overlap)"),
+        (
+            "5. LayoutAdapter + HiGHS",
+            adapter_boxes if adapter_boxes is not None else np.zeros((0, 4)),
+            adapter_categories or [],
+            None,
+            axes[4],
+            "LP Baseline" if adapter_boxes is not None else "Unavailable",
+        ),
+    ]
+
+    for title, boxes, cats, orders, ax, subtitle in panels:
+        ax.set_facecolor("#ffffff")
+        ax.set_xlim(-0.04, 1.04)
+        ax.set_ylim(1.04, -0.04)
+        ax.set_aspect("equal")
+        ax.set_title(f"{title}\n{subtitle}", fontsize=11, fontweight="bold", pad=8)
+
+        ax.add_patch(
+            patches.Rectangle((0, 0), 1.0, 1.0, linewidth=2, edgecolor="#2b2b2b", facecolor="none")
+        )
+
+        for i, box in enumerate(boxes):
+            x0, y0, w, h = [float(v) for v in box[:4]]
+            cat = cats[i] if i < len(cats) else "text"
+            color = CATEGORY_COLORS.get(cat, "#7f7f7f")
+            ax.add_patch(
+                patches.Rectangle(
+                    (x0, y0), max(1e-3, w), max(1e-3, h),
+                    linewidth=1.3, edgecolor=color, facecolor=color, alpha=0.35,
+                )
+            )
+            label = f"{orders[i]}:{cat[:4]}" if (orders is not None and i < len(orders)) else cat[:5]
+            if w > 0.05 and h > 0.02:
+                ax.text(
+                    x0 + w / 2.0,
+                    y0 + h / 2.0,
+                    label,
+                    ha="center",
+                    va="center",
+                    fontsize=6.5,
+                    fontweight="bold",
+                    color="#1a1a1a",
+                    bbox=dict(boxstyle="square,pad=0.08", fc="#ffffff", ec="none", alpha=0.6),
+                )
+
+        ax.grid(True, linestyle="--", alpha=0.3, color="#cccccc")
+        ax.set_xlabel("Normalized X")
+        ax.set_ylabel("Normalized Y")
+
+    legend_elements = [
+        patches.Patch(facecolor=color, edgecolor="#333", alpha=0.6, label=cat)
+        for cat, color in CATEGORY_COLORS.items()
+    ]
+    fig.legend(
+        handles=legend_elements,
+        loc="lower center",
+        ncol=len(CATEGORY_COLORS),
+        fontsize=9,
+        bbox_to_anchor=(0.5, -0.04),
+    )
+
+    plt.tight_layout()
+    if save_path is not None:
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(save_path, dpi=180, bbox_inches="tight")
+
+    return fig
+
 
 def render_four_panel_comparison(
     target_boxes: np.ndarray,
@@ -206,21 +399,218 @@ def render_four_panel_comparison(
     template_id: int | str,
     save_path: Path | None = None,
     title_suffix: str = "",
+    panel4_title: str = "4. LayoutAdapter + HiGHS",
+    panel4_subtitle: str | None = None,
 ) -> plt.Figure:
-    """Render 4-panel comparison: Ground Truth, Retrieved Template, Raw Neural Prediction, LayoutAdapter."""
+    """Render 4-panel comparison: Ground Truth, Retrieved Template, Raw Neural Prediction, and Panel 4 (Refined Neural or LayoutAdapter)."""
     fig, axes = plt.subplots(1, 4, figsize=(24, 7))
     fig.patch.set_facecolor("#f8f9fa")
 
+    p4_sub = panel4_subtitle if panel4_subtitle is not None else ("LP Baseline" if adapter_boxes is not None else "Unavailable")
     panels = [
         ("1. Ground Truth", target_boxes, target_categories, target_orders, axes[0], f"Poster #{poster_id}"),
         ("2. Retrieved Template", template_boxes, template_categories, None, axes[1], f"Template #{template_id}"),
         ("3. Raw Neural Prediction", neural_boxes, neural_categories, neural_orders, axes[2], f"Neural {title_suffix}".strip()),
         (
-            "4. LayoutAdapter + HiGHS",
+            panel4_title,
             adapter_boxes if adapter_boxes is not None else np.zeros((0, 4)),
             adapter_categories or [],
             None,
             axes[3],
+            p4_sub,
+        ),
+    ]
+
+    for title, boxes, cats, orders, ax, subtitle in panels:
+        ax.set_facecolor("#ffffff")
+        ax.set_xlim(-0.04, 1.04)
+        ax.set_ylim(1.04, -0.04)
+        ax.set_aspect("equal")
+        ax.set_title(f"{title}\n{subtitle}", fontsize=11, fontweight="bold", pad=8)
+
+        ax.add_patch(
+            patches.Rectangle((0, 0), 1.0, 1.0, linewidth=2, edgecolor="#2b2b2b", facecolor="none")
+        )
+
+        for i, box in enumerate(boxes):
+            x0, y0, w, h = [float(v) for v in box[:4]]
+            cat = cats[i] if i < len(cats) else "text"
+            color = CATEGORY_COLORS.get(cat, "#7f7f7f")
+            ax.add_patch(
+                patches.Rectangle(
+                    (x0, y0), max(1e-3, w), max(1e-3, h),
+                    linewidth=1.3, edgecolor=color, facecolor=color, alpha=0.35,
+                )
+            )
+            label = f"{orders[i]}:{cat[:4]}" if (orders is not None and i < len(orders)) else cat[:5]
+            if w > 0.05 and h > 0.02:
+                ax.text(
+                    x0 + w / 2.0,
+                    y0 + h / 2.0,
+                    label,
+                    ha="center",
+                    va="center",
+                    fontsize=6.5,
+                    fontweight="bold",
+                    color="#1a1a1a",
+                    bbox=dict(boxstyle="square,pad=0.08", fc="#ffffff", ec="none", alpha=0.6),
+                )
+
+        ax.grid(True, linestyle="--", alpha=0.3, color="#cccccc")
+        ax.set_xlabel("Normalized X")
+        ax.set_ylabel("Normalized Y")
+
+    legend_elements = [
+        patches.Patch(facecolor=color, edgecolor="#333", alpha=0.6, label=cat)
+        for cat, color in CATEGORY_COLORS.items()
+    ]
+    fig.legend(
+        handles=legend_elements,
+        loc="lower center",
+        ncol=len(CATEGORY_COLORS),
+        fontsize=9,
+        bbox_to_anchor=(0.5, -0.04),
+    )
+
+    plt.tight_layout()
+    if save_path is not None:
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(save_path, dpi=180, bbox_inches="tight")
+
+    return fig
+
+
+def render_five_panel_comparison(
+    target_boxes: np.ndarray,
+    target_categories: list[str],
+    target_orders: list[int] | None,
+    template_boxes: np.ndarray,
+    template_categories: list[str],
+    neural_boxes: np.ndarray,
+    neural_categories: list[str],
+    neural_orders: list[int] | None,
+    refined_boxes: np.ndarray,
+    refined_categories: list[str],
+    refined_orders: list[int] | None,
+    adapter_boxes: np.ndarray | None,
+    adapter_categories: list[str] | None,
+    poster_id: int | str,
+    template_id: int | str,
+    save_path: Path | None = None,
+    title_suffix: str = "",
+) -> plt.Figure:
+    """Render 5-panel comparison: GT, Retrieved Template, Raw Neural, Column-Grid Refined Neural, and LayoutAdapter + HiGHS."""
+    fig, axes = plt.subplots(1, 5, figsize=(30, 7))
+    fig.patch.set_facecolor("#f8f9fa")
+
+    panels = [
+        ("1. Ground Truth", target_boxes, target_categories, target_orders, axes[0], f"Poster #{poster_id}"),
+        ("2. Retrieved Template", template_boxes, template_categories, None, axes[1], f"Template #{template_id}"),
+        ("3. Raw Neural", neural_boxes, neural_categories, neural_orders, axes[2], f"Raw {title_suffix}".strip()),
+        ("4. Refined Neural", refined_boxes, refined_categories, refined_orders, axes[3], "Column-Grid (0-Overlap)"),
+        (
+            "5. LayoutAdapter + HiGHS",
+            adapter_boxes if adapter_boxes is not None else np.zeros((0, 4)),
+            adapter_categories or [],
+            None,
+            axes[4],
+            "LP Baseline" if adapter_boxes is not None else "Unavailable",
+        ),
+    ]
+
+    for title, boxes, cats, orders, ax, subtitle in panels:
+        ax.set_facecolor("#ffffff")
+        ax.set_xlim(-0.04, 1.04)
+        ax.set_ylim(1.04, -0.04)
+        ax.set_aspect("equal")
+        ax.set_title(f"{title}\n{subtitle}", fontsize=11, fontweight="bold", pad=8)
+
+        ax.add_patch(
+            patches.Rectangle((0, 0), 1.0, 1.0, linewidth=2, edgecolor="#2b2b2b", facecolor="none")
+        )
+
+        for i, box in enumerate(boxes):
+            x0, y0, w, h = [float(v) for v in box[:4]]
+            cat = cats[i] if i < len(cats) else "text"
+            color = CATEGORY_COLORS.get(cat, "#7f7f7f")
+            ax.add_patch(
+                patches.Rectangle(
+                    (x0, y0), max(1e-3, w), max(1e-3, h),
+                    linewidth=1.3, edgecolor=color, facecolor=color, alpha=0.35,
+                )
+            )
+            label = f"{orders[i]}:{cat[:4]}" if (orders is not None and i < len(orders)) else cat[:5]
+            if w > 0.05 and h > 0.02:
+                ax.text(
+                    x0 + w / 2.0,
+                    y0 + h / 2.0,
+                    label,
+                    ha="center",
+                    va="center",
+                    fontsize=6.5,
+                    fontweight="bold",
+                    color="#1a1a1a",
+                    bbox=dict(boxstyle="square,pad=0.08", fc="#ffffff", ec="none", alpha=0.6),
+                )
+
+        ax.grid(True, linestyle="--", alpha=0.3, color="#cccccc")
+        ax.set_xlabel("Normalized X")
+        ax.set_ylabel("Normalized Y")
+
+    legend_elements = [
+        patches.Patch(facecolor=color, edgecolor="#333", alpha=0.6, label=cat)
+        for cat, color in CATEGORY_COLORS.items()
+    ]
+    fig.legend(
+        handles=legend_elements,
+        loc="lower center",
+        ncol=len(CATEGORY_COLORS),
+        fontsize=9,
+        bbox_to_anchor=(0.5, -0.04),
+    )
+
+    plt.tight_layout()
+    if save_path is not None:
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(save_path, dpi=180, bbox_inches="tight")
+
+    return fig
+
+
+def render_five_panel_comparison(
+    target_boxes: np.ndarray,
+    target_categories: list[str],
+    target_orders: list[int] | None,
+    template_boxes: np.ndarray,
+    template_categories: list[str],
+    neural_boxes: np.ndarray,
+    neural_categories: list[str],
+    neural_orders: list[int] | None,
+    refined_boxes: np.ndarray,
+    refined_categories: list[str],
+    refined_orders: list[int] | None,
+    adapter_boxes: np.ndarray | None,
+    adapter_categories: list[str] | None,
+    poster_id: int | str,
+    template_id: int | str,
+    save_path: Path | None = None,
+    title_suffix: str = "",
+) -> plt.Figure:
+    """Render 5-panel comparison: GT, Retrieved Template, Raw Neural, Column-Grid Refined Neural, and LayoutAdapter + HiGHS."""
+    fig, axes = plt.subplots(1, 5, figsize=(30, 7))
+    fig.patch.set_facecolor("#f8f9fa")
+
+    panels = [
+        ("1. Ground Truth", target_boxes, target_categories, target_orders, axes[0], f"Poster #{poster_id}"),
+        ("2. Retrieved Template", template_boxes, template_categories, None, axes[1], f"Template #{template_id}"),
+        ("3. Raw Neural", neural_boxes, neural_categories, neural_orders, axes[2], f"Raw {title_suffix}".strip()),
+        ("4. Refined Neural", refined_boxes, refined_categories, refined_orders, axes[3], "Column-Grid (0-Overlap)"),
+        (
+            "5. LayoutAdapter + HiGHS",
+            adapter_boxes if adapter_boxes is not None else np.zeros((0, 4)),
+            adapter_categories or [],
+            None,
+            axes[4],
             "LP Baseline" if adapter_boxes is not None else "Unavailable",
         ),
     ]

@@ -944,6 +944,114 @@ class TestInferenceService(unittest.TestCase):
         self.assertEqual(code_a, 503)
         self.assertIn("Adaptation engine unavailable", err_a["detail"])
 
+    def test_26_keepalive_lifespan_pings_backend_and_stops(self):
+        cfg = self._base_settings(
+            SKIP_STARTUP_INIT=True,
+            BACKEND_SERVICE_URL="https://backend.test.local",
+            KEEPALIVE_ENABLED=True,
+            KEEPALIVE_INTERVAL_SECONDS=0.02,
+            KEEPALIVE_TIMEOUT_SECONDS=1.0,
+        )
+        app = create_app(cfg)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
+        async def _run():
+            with patch(
+                "inference_service.app.services.keepalive.requests.get",
+                return_value=mock_resp,
+            ) as mock_get:
+                async with app.router.lifespan_context(app):
+                    self.assertIsNotNone(app.state.keepalive)
+                    self.assertTrue(app.state.keepalive.is_running)
+                    await asyncio.sleep(0.06)
+                self.assertFalse(app.state.keepalive.is_running)
+                self.assertGreaterEqual(mock_get.call_count, 1)
+                self.assertEqual(
+                    mock_get.call_args.args[0],
+                    "https://backend.test.local/",
+                )
+
+        asyncio.run(_run())
+
+    def test_27_neural_refiner_and_bounded_anchor_model_zero_overlap(self):
+        # Build a modern bounded + anchor-conditioned neural model bundle (matching v0.2.0+)
+        modern_bundle = self.root / "modern_neural_bundle"
+        set_seed(99)
+        modern_model = TemplateConditionedLayoutModel(
+            content_dim=18,
+            template_dim=16,
+            d_model=32,
+            num_heads=4,
+            encoder_layers=1,
+            decoder_layers=1,
+            ffn_dim=64,
+            num_columns=5,
+            dropout=0.0,
+            bbox_parameterization="bounded",
+            use_anchor_conditioning=True,
+            min_box_width=0.01,
+            min_box_height=0.005,
+        )
+        modern_cfg = {
+            "architecture": "TemplateConditionedLayoutModel",
+            "content_dim": 18,
+            "template_dim": 16,
+            "d_model": 32,
+            "num_heads": 4,
+            "encoder_layers": 1,
+            "decoder_layers": 1,
+            "ffn_dim": 64,
+            "num_columns": 5,
+            "dropout": 0.0,
+            "bbox_parameterization": "bounded",
+            "use_anchor_conditioning": True,
+            "min_box_width": 0.01,
+            "min_box_height": 0.005,
+        }
+        build_model_bundle(
+            bundle_dir=modern_bundle,
+            checkpoint_data={"model_state_dict": modern_model.state_dict()},
+            model_config=modern_cfg,
+            training_config={"include_order_index": False, "epochs": 2},
+            training_task_id="task_modern_020",
+            dataset_identifier="scipostlayout_v3",
+            semantic_version="0.2.0",
+            validation_metrics={"val_iou": 0.61},
+            lifecycle_status="candidate",
+            model_family="poster_layout_generator",
+        )
+
+        cfg = self._base_settings(
+            NEURAL_MODEL_ID="clearml_gen_id_010",
+            NEURAL_USE_REFINER=True,
+            DEFAULT_ENGINE="neural",
+        )
+        app = create_app(cfg)
+        p1, p2, p3 = self._mock_clearml_registry(neural_dir=modern_bundle)
+        with p1, p2, p3:
+            app.state.inference_manager.initialize(cfg)
+
+        code, res = asyncio.run(
+            _asgi_request(
+                app,
+                "POST",
+                "/v1/layouts/generate",
+                self._sample_generate_payload("neural"),
+            )
+        )
+        self.assertEqual(code, 200)
+        self.assertEqual(res["engine"], "neural")
+        self.assertEqual(res["model_version"], "0.2.0")
+        gm = res["generation_metrics"]
+        self.assertTrue(gm["refiner_applied"])
+        self.assertEqual(gm["validated_overlap_area"], 0.0)
+        self.assertEqual(gm["raw_overflow_rate"], 0.0)
+        self.assertEqual(gm["bbox_parameterization"], "bounded")
+        self.assertTrue(gm["use_anchor_conditioning"])
+        self.assertFalse(gm["include_order_index"])
+
 
 if __name__ == "__main__":
     unittest.main()
