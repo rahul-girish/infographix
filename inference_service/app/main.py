@@ -15,6 +15,7 @@ from inference_service.app.routes.generation import router as generation_router
 from inference_service.app.routes.health import router as health_router
 from inference_service.app.routes.models import router as models_router
 from inference_service.app.services.inference_manager import InferenceManager
+from inference_service.app.services.keepalive import PeerKeepAlive
 from inference_service.app.services.memory_profiler import MemoryTracker
 
 
@@ -35,8 +36,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.inference_manager = manager
         if not cfg.SKIP_STARTUP_INIT:
             manager.initialize(cfg)
-        yield
-        manager.shutdown()
+        keepalive: PeerKeepAlive | None = None
+        if (
+            cfg.KEEPALIVE_ENABLED
+            and cfg.BACKEND_SERVICE_URL
+            and cfg.KEEPALIVE_INTERVAL_SECONDS > 0
+        ):
+            keepalive = PeerKeepAlive(
+                peer_url=cfg.BACKEND_SERVICE_URL,
+                ping_path="/",
+                interval_seconds=cfg.KEEPALIVE_INTERVAL_SECONDS,
+                timeout_seconds=cfg.KEEPALIVE_TIMEOUT_SECONDS,
+                service_name="infographix-inference",
+            )
+            keepalive.start()
+        app.state.keepalive = keepalive
+        try:
+            yield
+        finally:
+            if keepalive is not None:
+                await keepalive.stop()
+            manager.shutdown()
 
     app = FastAPI(
         title=cfg.SERVICE_NAME,

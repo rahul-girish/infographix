@@ -14,12 +14,48 @@ from backend.app.api.v1.router import api_router
 from backend.app.core.config import settings
 from backend.app.db.base import Base
 from backend.app.db.session import engine
+from backend.app.services.keepalive import DatabaseKeepAlive, PeerKeepAlive
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
-    yield
+    keepalive: PeerKeepAlive | None = None
+    if (
+        settings.KEEPALIVE_ENABLED
+        and settings.INFERENCE_SERVICE_URL
+        and settings.KEEPALIVE_INTERVAL_SECONDS > 0
+    ):
+        keepalive = PeerKeepAlive(
+            peer_url=settings.INFERENCE_SERVICE_URL,
+            ping_path="/health/live",
+            interval_seconds=settings.KEEPALIVE_INTERVAL_SECONDS,
+            timeout_seconds=settings.KEEPALIVE_TIMEOUT_SECONDS,
+            service_name="infographix-backend",
+        )
+        keepalive.start()
+    app.state.keepalive = keepalive
+
+    db_keepalive: DatabaseKeepAlive | None = None
+    if (
+        settings.DB_KEEPALIVE_ENABLED
+        and settings.DB_KEEPALIVE_INTERVAL_SECONDS > 0
+        and not settings.DATABASE_URL.startswith("sqlite")
+    ):
+        db_keepalive = DatabaseKeepAlive(
+            engine=engine,
+            interval_seconds=settings.DB_KEEPALIVE_INTERVAL_SECONDS,
+        )
+        db_keepalive.start()
+    app.state.db_keepalive = db_keepalive
+
+    try:
+        yield
+    finally:
+        if keepalive is not None:
+            await keepalive.stop()
+        if db_keepalive is not None:
+            await db_keepalive.stop()
 
 
 app = FastAPI(

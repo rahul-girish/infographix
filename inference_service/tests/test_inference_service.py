@@ -944,6 +944,37 @@ class TestInferenceService(unittest.TestCase):
         self.assertEqual(code_a, 503)
         self.assertIn("Adaptation engine unavailable", err_a["detail"])
 
+    def test_26_keepalive_lifespan_pings_backend_and_stops(self):
+        cfg = self._base_settings(
+            SKIP_STARTUP_INIT=True,
+            BACKEND_SERVICE_URL="https://backend.test.local",
+            KEEPALIVE_ENABLED=True,
+            KEEPALIVE_INTERVAL_SECONDS=0.02,
+            KEEPALIVE_TIMEOUT_SECONDS=1.0,
+        )
+        app = create_app(cfg)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
+        async def _run():
+            with patch(
+                "inference_service.app.services.keepalive.requests.get",
+                return_value=mock_resp,
+            ) as mock_get:
+                async with app.router.lifespan_context(app):
+                    self.assertIsNotNone(app.state.keepalive)
+                    self.assertTrue(app.state.keepalive.is_running)
+                    await asyncio.sleep(0.06)
+                self.assertFalse(app.state.keepalive.is_running)
+                self.assertGreaterEqual(mock_get.call_count, 1)
+                self.assertEqual(
+                    mock_get.call_args.args[0],
+                    "https://backend.test.local/",
+                )
+
+        asyncio.run(_run())
+
 
 if __name__ == "__main__":
     unittest.main()

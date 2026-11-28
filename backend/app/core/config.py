@@ -18,6 +18,15 @@ class Settings(BaseSettings):
     INFERENCE_TIMEOUT_SECONDS: float = 120.0
     DEFAULT_ENGINE: str = "adaptation"
 
+    # Mutual keep-alive ping to inference service (prevents Render free-tier idle spin-down)
+    KEEPALIVE_ENABLED: bool = True
+    KEEPALIVE_INTERVAL_SECONDS: float = 600.0
+    KEEPALIVE_TIMEOUT_SECONDS: float = 10.0
+
+    # Periodic Supabase DB keep-alive (prevents Supabase free-tier 7-day auto-pause)
+    DB_KEEPALIVE_ENABLED: bool = True
+    DB_KEEPALIVE_INTERVAL_SECONDS: float = 86400.0
+
     # CORS
     CORS_ORIGINS: List[str] = [
         "http://localhost:5173",

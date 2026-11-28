@@ -274,6 +274,65 @@ class TestGenerationMLOpsAPI(unittest.TestCase):
         fetched = get_run(run_id=uuid.UUID(run.id), db=self.db)
         self.assertIn("pdf", fetched.exportedFormats)
 
+    def test_keepalive_pings_inference_health_and_stops_cleanly(self):
+        import asyncio
+        from backend.app.services.keepalive import PeerKeepAlive
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
+        async def _run():
+            ka = PeerKeepAlive(
+                peer_url="https://inference.test.local/",
+                ping_path="/health/live",
+                interval_seconds=0.02,
+                timeout_seconds=1.0,
+            )
+            self.assertEqual(ka.target_url, "https://inference.test.local/health/live")
+            with patch("backend.app.services.keepalive.requests.get", return_value=mock_resp) as mock_get:
+                ka.start()
+                self.assertTrue(ka.is_running)
+                await asyncio.sleep(0.06)
+                await ka.stop()
+                self.assertFalse(ka.is_running)
+                self.assertGreaterEqual(mock_get.call_count, 1)
+                self.assertEqual(
+                    mock_get.call_args.args[0],
+                    "https://inference.test.local/health/live",
+                )
+
+            with patch(
+                "backend.app.services.keepalive.requests.get",
+                side_effect=RuntimeError("network down"),
+            ):
+                self.assertFalse(ka.ping_once())
+
+        asyncio.run(_run())
+
+    def test_database_keepalive_queries_and_stops_cleanly(self):
+        import asyncio
+        from backend.app.services.keepalive import DatabaseKeepAlive
+
+        async def _run():
+            db_ka = DatabaseKeepAlive(
+                engine=self.engine,
+                interval_seconds=0.02,
+            )
+            self.assertTrue(db_ka.ping_once())
+            db_ka.start()
+            self.assertTrue(db_ka.is_running)
+            await asyncio.sleep(0.06)
+            await db_ka.stop()
+            self.assertFalse(db_ka.is_running)
+
+            bad_ka = DatabaseKeepAlive(
+                engine=self.engine,
+                query="SELECT * FROM nonexistent_table_xyz",
+            )
+            self.assertFalse(bad_ka.ping_once())
+
+        asyncio.run(_run())
+
 
 if __name__ == "__main__":
     unittest.main()
