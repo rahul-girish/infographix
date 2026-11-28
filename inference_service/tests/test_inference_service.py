@@ -975,6 +975,83 @@ class TestInferenceService(unittest.TestCase):
 
         asyncio.run(_run())
 
+    def test_27_neural_refiner_and_bounded_anchor_model_zero_overlap(self):
+        # Build a modern bounded + anchor-conditioned neural model bundle (matching v0.2.0+)
+        modern_bundle = self.root / "modern_neural_bundle"
+        set_seed(99)
+        modern_model = TemplateConditionedLayoutModel(
+            content_dim=18,
+            template_dim=16,
+            d_model=32,
+            num_heads=4,
+            encoder_layers=1,
+            decoder_layers=1,
+            ffn_dim=64,
+            num_columns=5,
+            dropout=0.0,
+            bbox_parameterization="bounded",
+            use_anchor_conditioning=True,
+            min_box_width=0.01,
+            min_box_height=0.005,
+        )
+        modern_cfg = {
+            "architecture": "TemplateConditionedLayoutModel",
+            "content_dim": 18,
+            "template_dim": 16,
+            "d_model": 32,
+            "num_heads": 4,
+            "encoder_layers": 1,
+            "decoder_layers": 1,
+            "ffn_dim": 64,
+            "num_columns": 5,
+            "dropout": 0.0,
+            "bbox_parameterization": "bounded",
+            "use_anchor_conditioning": True,
+            "min_box_width": 0.01,
+            "min_box_height": 0.005,
+        }
+        build_model_bundle(
+            bundle_dir=modern_bundle,
+            checkpoint_data={"model_state_dict": modern_model.state_dict()},
+            model_config=modern_cfg,
+            training_config={"include_order_index": False, "epochs": 2},
+            training_task_id="task_modern_020",
+            dataset_identifier="scipostlayout_v3",
+            semantic_version="0.2.0",
+            validation_metrics={"val_iou": 0.61},
+            lifecycle_status="candidate",
+            model_family="poster_layout_generator",
+        )
+
+        cfg = self._base_settings(
+            NEURAL_MODEL_ID="clearml_gen_id_010",
+            NEURAL_USE_REFINER=True,
+            DEFAULT_ENGINE="neural",
+        )
+        app = create_app(cfg)
+        p1, p2, p3 = self._mock_clearml_registry(neural_dir=modern_bundle)
+        with p1, p2, p3:
+            app.state.inference_manager.initialize(cfg)
+
+        code, res = asyncio.run(
+            _asgi_request(
+                app,
+                "POST",
+                "/v1/layouts/generate",
+                self._sample_generate_payload("neural"),
+            )
+        )
+        self.assertEqual(code, 200)
+        self.assertEqual(res["engine"], "neural")
+        self.assertEqual(res["model_version"], "0.2.0")
+        gm = res["generation_metrics"]
+        self.assertTrue(gm["refiner_applied"])
+        self.assertEqual(gm["validated_overlap_area"], 0.0)
+        self.assertEqual(gm["raw_overflow_rate"], 0.0)
+        self.assertEqual(gm["bbox_parameterization"], "bounded")
+        self.assertTrue(gm["use_anchor_conditioning"])
+        self.assertFalse(gm["include_order_index"])
+
 
 if __name__ == "__main__":
     unittest.main()
