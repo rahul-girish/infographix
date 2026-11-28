@@ -55,3 +55,8 @@ backend/data/**
 /.mydvc/credentials
 clearml.conf
 *.clearml.conf
+
+# Presentation & Phase Learning Reports
+/PHASE_*.md
+
+/CODEBASE_*.md
