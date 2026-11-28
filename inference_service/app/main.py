@@ -1,5 +1,6 @@
 import logging
 import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -7,15 +8,17 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from inference_service.app.config import Settings, get_settings
 from inference_service.app.routes.generation import router as generation_router
 from inference_service.app.routes.health import router as health_router
+from inference_service.app.routes.metrics import router as metrics_router
 from inference_service.app.routes.models import router as models_router
 from inference_service.app.services.inference_manager import InferenceManager
 from inference_service.app.services.memory_profiler import MemoryTracker
+from inference_service.app.services.metrics import InferenceMetrics
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -28,13 +31,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     tracker = MemoryTracker()
     tracker.record("process_startup")
     manager = InferenceManager(memory_tracker=tracker)
+    metrics = InferenceMetrics()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.settings = cfg
         app.state.inference_manager = manager
+        app.state.metrics = metrics
         if not cfg.SKIP_STARTUP_INIT:
             manager.initialize(cfg)
+        metrics.update_runtime_gauges(is_ready=bool(getattr(manager, "is_ready", False)))
         yield
         manager.shutdown()
 
@@ -48,6 +54,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = cfg
     app.state.inference_manager = manager
+    app.state.metrics = metrics
 
     app.add_middleware(
         CORSMiddleware,
@@ -57,7 +64,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
+    @app.middleware("http")
+    async def prometheus_http_middleware(request: Request, call_next):
+        if request.url.path == "/metrics":
+            return await call_next(request)
+        t0 = time.perf_counter()
+        status_code = 500
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            return response
+        finally:
+            metrics.record_http_request(
+                method=request.method,
+                path=request.url.path,
+                status_code=status_code,
+                duration_s=time.perf_counter() - t0,
+            )
+
     app.include_router(health_router)
+    app.include_router(metrics_router)
     app.include_router(models_router)
     app.include_router(generation_router)
 
@@ -68,6 +94,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "version": cfg.SERVICE_VERSION,
             "live": "/health/live",
             "ready": "/health/ready",
+            "metrics": "/metrics",
             "models": "/v1/models",
             "generate": "/v1/layouts/generate",
         }

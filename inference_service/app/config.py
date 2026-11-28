@@ -35,8 +35,9 @@ class Settings(BaseSettings):
     NEURAL_MODEL_VERSION: Optional[str] = None
     NEURAL_LIFECYCLE_STAGE: Optional[str] = None
 
-    DEFAULT_ENGINE: Literal["adaptation", "neural"] = "neural"
+    DEFAULT_ENGINE: Literal["neural"] = "neural"
     TORCH_DEVICE: str = "cpu"
+    USE_COLUMN_GRID_REFINER: bool = True
 
     # Template element geometry table dependency (data/processed/features/v1/elements.parquet)
     ELEMENTS_PARQUET_PATH: str = "/app/data_cache/elements.parquet"
@@ -63,6 +64,9 @@ class Settings(BaseSettings):
     # Startup behavior
     EAGER_LOAD_ADAPTATION_DATA: bool = False
     SKIP_STARTUP_INIT: bool = False
+
+    # Observability / Prometheus metrics
+    METRICS_AUTH_TOKEN: Optional[str] = None
 
     CORS_ORIGINS: List[str] = ["*"]
 
