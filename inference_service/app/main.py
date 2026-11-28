@@ -1,5 +1,6 @@
 import logging
 import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -7,16 +8,17 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from inference_service.app.config import Settings, get_settings
 from inference_service.app.routes.generation import router as generation_router
 from inference_service.app.routes.health import router as health_router
+from inference_service.app.routes.metrics import router as metrics_router
 from inference_service.app.routes.models import router as models_router
 from inference_service.app.services.inference_manager import InferenceManager
-from inference_service.app.services.keepalive import PeerKeepAlive
 from inference_service.app.services.memory_profiler import MemoryTracker
+from inference_service.app.services.metrics import ServiceMetrics
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -28,35 +30,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     tracker = MemoryTracker()
     tracker.record("process_startup")
-    manager = InferenceManager(memory_tracker=tracker)
+    metrics = ServiceMetrics()
+    manager = InferenceManager(memory_tracker=tracker, metrics=metrics)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.settings = cfg
         app.state.inference_manager = manager
+        app.state.metrics = metrics
         if not cfg.SKIP_STARTUP_INIT:
             manager.initialize(cfg)
-        keepalive: PeerKeepAlive | None = None
-        if (
-            cfg.KEEPALIVE_ENABLED
-            and cfg.BACKEND_SERVICE_URL
-            and cfg.KEEPALIVE_INTERVAL_SECONDS > 0
-        ):
-            keepalive = PeerKeepAlive(
-                peer_url=cfg.BACKEND_SERVICE_URL,
-                ping_path="/",
-                interval_seconds=cfg.KEEPALIVE_INTERVAL_SECONDS,
-                timeout_seconds=cfg.KEEPALIVE_TIMEOUT_SECONDS,
-                service_name="infographix-inference",
-            )
-            keepalive.start()
-        app.state.keepalive = keepalive
-        try:
-            yield
-        finally:
-            if keepalive is not None:
-                await keepalive.stop()
-            manager.shutdown()
+        yield
+        manager.shutdown()
 
     app = FastAPI(
         title=cfg.SERVICE_NAME,
@@ -68,6 +53,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = cfg
     app.state.inference_manager = manager
+    app.state.metrics = metrics
 
     app.add_middleware(
         CORSMiddleware,
@@ -77,9 +63,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
+    if cfg.METRICS_ENABLED:
+        @app.middleware("http")
+        async def prometheus_http_middleware(request: Request, call_next):
+            # Resolve matched route template when possible to avoid high-cardinality 404 labels
+            method = request.method
+            start_t = time.perf_counter()
+            in_prog = metrics.http_requests_in_progress.labels(method=method)
+            in_prog.inc()
+            status_code = "500"
+            try:
+                response = await call_next(request)
+                status_code = str(response.status_code)
+                return response
+            finally:
+                in_prog.dec()
+                route = request.scope.get("route")
+                path_label = getattr(route, "path", "unmatched")
+                if path_label != "/metrics":
+                    metrics.http_requests_total.labels(
+                        method=method,
+                        path=path_label,
+                        status_code=status_code,
+                    ).inc()
+                    metrics.http_request_duration_seconds.labels(
+                        method=method,
+                        path=path_label,
+                    ).observe(max(0.0, time.perf_counter() - start_t))
+
     app.include_router(health_router)
     app.include_router(models_router)
     app.include_router(generation_router)
+    if cfg.METRICS_ENABLED:
+        app.include_router(metrics_router)
 
     @app.get("/")
     def root():
@@ -90,6 +106,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "ready": "/health/ready",
             "models": "/v1/models",
             "generate": "/v1/layouts/generate",
+            "metrics": "/metrics" if cfg.METRICS_ENABLED else None,
         }
 
     return app

@@ -36,7 +36,6 @@ class Settings(BaseSettings):
     NEURAL_LIFECYCLE_STAGE: Optional[str] = None
 
     DEFAULT_ENGINE: Literal["adaptation", "neural"] = "neural"
-    NEURAL_USE_REFINER: bool = True
     TORCH_DEVICE: str = "cpu"
 
     # Template element geometry table dependency (data/processed/features/v1/elements.parquet)
@@ -65,11 +64,9 @@ class Settings(BaseSettings):
     EAGER_LOAD_ADAPTATION_DATA: bool = False
     SKIP_STARTUP_INIT: bool = False
 
-    # Mutual keep-alive ping to backend service (prevents Render free-tier idle spin-down)
-    BACKEND_SERVICE_URL: Optional[str] = None
-    KEEPALIVE_ENABLED: bool = True
-    KEEPALIVE_INTERVAL_SECONDS: float = 600.0
-    KEEPALIVE_TIMEOUT_SECONDS: float = 10.0
+    # Prometheus monitoring
+    METRICS_ENABLED: bool = True
+    METRICS_AUTH_TOKEN: Optional[str] = None
 
     CORS_ORIGINS: List[str] = ["*"]
 
