@@ -38,7 +38,6 @@ class Settings(BaseSettings):
     DEFAULT_ENGINE: Literal["adaptation", "neural"] = "neural"
     NEURAL_USE_REFINER: bool = True
     TORCH_DEVICE: str = "cpu"
-    USE_COLUMN_GRID_REFINER: bool = True
 
     # Template element geometry table dependency (data/processed/features/v1/elements.parquet)
     ELEMENTS_PARQUET_PATH: str = "/app/data_cache/elements.parquet"
@@ -66,8 +65,6 @@ class Settings(BaseSettings):
     EAGER_LOAD_ADAPTATION_DATA: bool = False
     SKIP_STARTUP_INIT: bool = False
 
-    # Observability / Prometheus metrics
-    METRICS_AUTH_TOKEN: Optional[str] = None
     # Mutual keep-alive ping to backend service (prevents Render free-tier idle spin-down)
     BACKEND_SERVICE_URL: Optional[str] = None
     KEEPALIVE_ENABLED: bool = True

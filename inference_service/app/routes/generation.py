@@ -1,7 +1,6 @@
 import logging
-import time
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from inference_service.app.dependencies import get_inference_manager
 from inference_service.app.schemas.layout import GenerateLayoutRequest, GenerateLayoutResponse
@@ -19,35 +18,23 @@ router = APIRouter(prefix="/v1/layouts", tags=["Layout Generation"])
 @router.post("/generate", response_model=GenerateLayoutResponse)
 def generate_layout(
     payload: GenerateLayoutRequest,
-    request: Request,
     manager: InferenceManager = Depends(get_inference_manager),
 ) -> GenerateLayoutResponse:
     """Generate a validated poster layout using the ClearML-loaded neural or adaptation engine."""
-    metrics = getattr(request.app.state, "metrics", None)
-    engine_label = str(payload.engine or getattr(request.app.state.settings, "DEFAULT_ENGINE", "neural"))
-    t0 = time.perf_counter()
     try:
         result = manager.generate(payload)
-        if metrics is not None:
-            metrics.record_generation_success(result=result, duration_s=time.perf_counter() - t0)
         return GenerateLayoutResponse(**result)
     except ServiceNotReadyError as exc:
-        if metrics is not None:
-            metrics.record_generation_error(engine_label, "not_ready", time.perf_counter() - t0)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc) or "Inference service is not ready to serve requests.",
         ) from exc
     except InferenceExecutionError as exc:
-        if metrics is not None:
-            metrics.record_generation_error(engine_label, "execution_error", time.perf_counter() - t0)
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         ) from exc
     except Exception as exc:
-        if metrics is not None:
-            metrics.record_generation_error(engine_label, "internal_error", time.perf_counter() - t0)
         logger.exception("Unhandled inference error")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
