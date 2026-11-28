@@ -35,12 +35,8 @@ class Settings(BaseSettings):
     NEURAL_MODEL_VERSION: Optional[str] = None
     NEURAL_LIFECYCLE_STAGE: Optional[str] = None
 
-<<<<<<< HEAD
-    DEFAULT_ENGINE: Literal["neural"] = "neural"
-=======
     DEFAULT_ENGINE: Literal["adaptation", "neural"] = "neural"
     NEURAL_USE_REFINER: bool = True
->>>>>>> bc0a744b32f9d975d87d52095d12c651dde13992
     TORCH_DEVICE: str = "cpu"
     USE_COLUMN_GRID_REFINER: bool = True
 
@@ -70,16 +66,13 @@ class Settings(BaseSettings):
     EAGER_LOAD_ADAPTATION_DATA: bool = False
     SKIP_STARTUP_INIT: bool = False
 
-<<<<<<< HEAD
     # Observability / Prometheus metrics
     METRICS_AUTH_TOKEN: Optional[str] = None
-=======
     # Mutual keep-alive ping to backend service (prevents Render free-tier idle spin-down)
     BACKEND_SERVICE_URL: Optional[str] = None
     KEEPALIVE_ENABLED: bool = True
     KEEPALIVE_INTERVAL_SECONDS: float = 600.0
     KEEPALIVE_TIMEOUT_SECONDS: float = 10.0
->>>>>>> bc0a744b32f9d975d87d52095d12c651dde13992
 
     CORS_ORIGINS: List[str] = ["*"]
 
