@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     EAGER_LOAD_ADAPTATION_DATA: bool = False
     SKIP_STARTUP_INIT: bool = False
 
+    # Mutual keep-alive ping to backend service (prevents Render free-tier idle spin-down)
+    BACKEND_SERVICE_URL: Optional[str] = None
+    KEEPALIVE_ENABLED: bool = True
+    KEEPALIVE_INTERVAL_SECONDS: float = 600.0
+    KEEPALIVE_TIMEOUT_SECONDS: float = 10.0
+
     CORS_ORIGINS: List[str] = ["*"]
 
     model_config = SettingsConfigDict(
