@@ -202,6 +202,109 @@ class TestPrometheusMetrics(unittest.TestCase):
             self.assertEqual(r_ok.status_code, 200)
             self.assertIn("infographix_service_ready 1.0", r_ok.text)
 
+    def test_online_drift_detection_and_grafana_otlp_payload(self) -> None:
+        from inference_service.app.services.grafana_pusher import (
+            GrafanaCloudPusher,
+            build_otlp_metrics_payload,
+        )
+
+        settings = Settings(
+            SKIP_STARTUP_INIT=True,
+            METRICS_ENABLED=True,
+            DRIFT_WINDOW_SIZE=20,
+            DRIFT_MIN_SAMPLES=5,
+            DRIFT_PSI_THRESHOLD=0.20,
+        )
+        app = create_app(settings)
+        mgr = app.state.inference_manager
+        mgr.retriever = _DummyRetriever()
+        mgr.retriever_info = LoadedModelMetadata(
+            role="retriever",
+            model_name="poster_layout_retriever-v2.1.0",
+            model_family="poster_layout_retriever",
+            clearml_model_id="ret_test_id",
+            semantic_version="2.1.0",
+            architecture="LayoutRetriever",
+            checkpoint_sha256="abc",
+            lifecycle_status="production",
+            dataset_identifier="SciPostLayout v2",
+            supported_engines=["neural"],
+        )
+        mgr.neural_model = TemplateConditionedLayoutModel(
+            d_model=32, num_heads=4, encoder_layers=1, decoder_layers=1, ffn_dim=64,
+            bbox_parameterization="bounded", use_anchor_conditioning=True,
+        ).eval()
+        mgr.neural_info = LoadedModelMetadata(
+            role="neural_generator",
+            model_name="poster_layout_generator-v2.2.0",
+            model_family="poster_layout_generator",
+            clearml_model_id="gen_test_id",
+            semantic_version="2.2.0",
+            architecture="TemplateConditionedLayoutModel",
+            checkpoint_sha256="def",
+            lifecycle_status="candidate",
+            dataset_identifier="SciPostLayout v2",
+            supported_engines=["neural"],
+        )
+        mgr.ready = True
+        app.state.metrics.set_readiness(ready=True, retriever_info=mgr.retriever_info, neural_info=mgr.neural_info)
+
+        # Send 6 heavily drifted requests (extreme block/figure count & aspect ratio)
+        drifted_payload = {
+            "engine": "neural",
+            "request": {
+                "title": "Extreme OOD Poster",
+                "authors": "A. Researcher",
+                "orientation": "landscape",
+                "preferredColumns": 4,
+                "blocks": [
+                    {"id": f"s{i}", "type": "section", "heading": f"Sec {i}", "text": "word " * 180}
+                    for i in range(12)
+                ] + [
+                    {"id": f"f{j}", "type": "figure", "heading": f"Fig {j}", "aspectRatio": 3.8, "caption": "cap " * 12}
+                    for j in range(12)
+                ],
+            },
+        }
+        with TestClient(app) as client:
+            for _ in range(6):
+                resp = client.post("/v1/layouts/generate", json=drifted_payload)
+                self.assertEqual(resp.status_code, 200)
+
+            drift_json = client.get("/v1/monitoring/drift").json()
+            self.assertTrue(drift_json["ready"])
+            self.assertEqual(drift_json["window_samples"], 6)
+            self.assertGreaterEqual(drift_json["overall_psi"], 0.20)
+            self.assertTrue(drift_json["alert_active"])
+
+            metrics_text = client.get("/metrics").text
+            self.assertIn("infographix_drift_window_samples 6.0", metrics_text)
+            self.assertIn("infographix_drift_alert_active 1.0", metrics_text)
+            self.assertIn('infographix_feature_drift_psi{feature="total_element_count"}', metrics_text)
+
+            # Verify OTLP JSON payload + mocked GrafanaCloudPusher
+            otlp = build_otlp_metrics_payload(app.state.metrics)
+            otlp_names = {
+                m["name"]
+                for m in otlp["resourceMetrics"][0]["scopeMetrics"][0]["metrics"]
+            }
+            self.assertIn("infographix_drift_overall_psi", otlp_names)
+            self.assertIn("infographix_service_ready", otlp_names)
+
+            pusher = GrafanaCloudPusher(
+                metrics=app.state.metrics,
+                otlp_endpoint="https://otlp-gateway-prod-us-east-0.grafana.net/otlp",
+                instance_id="12345",
+                api_key="glc_test_key",
+            )
+            fake_resp = SimpleNamespace(status_code=200, text="ok")
+            with patch("inference_service.app.services.grafana_pusher.requests.post", return_value=fake_resp) as m_post:
+                self.assertTrue(pusher.push_once())
+                self.assertEqual(pusher.push_count, 1)
+                self.assertTrue(pusher.last_push_ok)
+                self.assertEqual(m_post.call_args[0][0], "https://otlp-gateway-prod-us-east-0.grafana.net/otlp/v1/metrics")
+                self.assertEqual(m_post.call_args[1]["auth"], ("12345", "glc_test_key"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -23,6 +23,10 @@ from inference_service.app.services.data_loader import (
     has_configured_adaptation_source,
     load_elements_dataframe,
 )
+from inference_service.app.services.drift_monitor import (
+    DriftObservation,
+    OnlineDriftMonitor,
+)
 from inference_service.app.services.memory_profiler import (
     MemoryTracker,
     trim_process_memory,
@@ -39,6 +43,7 @@ from src.features.request_schema import ContentBlockDemand, PosterRequest
 from src.models.layout_retrieval import LayoutRetriever
 from src.neural_layout.dataset import CATEGORY_TO_IDX, TemplateSlotItem, UserContentItem
 from src.neural_layout.layout_model import TemplateConditionedLayoutModel
+from src.neural_layout.postprocess import NeuralLayoutRefiner
 
 logger = logging.getLogger(__name__)
 
@@ -260,11 +265,13 @@ class InferenceManager:
         self,
         memory_tracker: MemoryTracker | None = None,
         metrics: ServiceMetrics | None = None,
+        drift_monitor: OnlineDriftMonitor | None = None,
     ) -> None:
         self._init_lock = threading.Lock()
         self._adaptation_lock = threading.Lock()
         self.memory_tracker = memory_tracker or MemoryTracker()
         self.metrics = metrics
+        self.drift_monitor = drift_monitor
 
         self._settings: Settings | None = None
         self.ready: bool = False
@@ -756,9 +763,30 @@ class InferenceManager:
         assert self.neural_model is not None
 
         total_items = max(1, len(req.blocks))
+        bbox_param = str(getattr(self.neural_model, "bbox_parameterization", "independent"))
+        use_anchor = bool(getattr(self.neural_model, "use_anchor_conditioning", False))
+        include_order_index = bbox_param != "bounded"
+
+        # Compute leak-free document-order identity (section_group_norm & in_cat_rank_norm)
+        total_sections = max(1, sum(1 for b in req.blocks if b.scipost_category == "section"))
+        cat_counts: dict[str, int] = {}
+        for b in req.blocks:
+            c = b.scipost_category if b.scipost_category in CATEGORY_TO_IDX else "text"
+            cat_counts[c] = cat_counts.get(c, 0) + 1
+        cat_seen: dict[str, int] = {}
+        cur_sec = 0
+
         content_vecs: list[np.ndarray] = []
         for idx, blk in enumerate(req.blocks):
             cat = blk.scipost_category if blk.scipost_category in CATEGORY_TO_IDX else "text"
+            if cat == "section":
+                cur_sec += 1
+            sec_norm = 0.0 if cat in ("title", "author_info") else float(cur_sec) / float(total_sections)
+            rank_i = cat_seen.get(cat, 0)
+            cat_seen[cat] = rank_i + 1
+            n_c = cat_counts.get(cat, 1)
+            in_cat_rank = 0.5 if n_c <= 1 else float(rank_i) / float(n_c - 1)
+
             raw_txt = blocks_meta.get(blk.block_id, {}).get("content")
             has_txt = (
                 isinstance(raw_txt, str)
@@ -778,10 +806,14 @@ class InferenceManager:
                 aspect_source="metadata" if blk.aspect_ratio is not None else "unavailable",
                 table_rows=int(blk.table_rows or 0),
                 table_cols=int(blk.table_cols or 0),
+                section_group_norm=sec_norm,
+                in_cat_rank_norm=in_cat_rank,
                 priority=float(blk.priority),
                 shuffled_order_idx=idx,
             )
-            content_vecs.append(item.to_feature_vector(total_items=total_items, include_order_index=True))
+            content_vecs.append(
+                item.to_feature_vector(total_items=total_items, include_order_index=include_order_index)
+            )
 
         tmpl_vecs, slot_source = self._get_neural_template_slots(template_poster_id)
 
@@ -793,6 +825,16 @@ class InferenceManager:
 
         with torch.inference_mode():
             preds = self.neural_model(content_tensor, template_tensor, content_mask, template_mask)
+
+        use_refiner = bool(getattr(self._settings, "NEURAL_USE_REFINER", True))
+        if use_refiner:
+            preds = NeuralLayoutRefiner().refine_batch(
+                preds,
+                {
+                    "content_feats": content_tensor,
+                    "content_mask": content_mask,
+                },
+            )
 
         pred_boxes = preds["pred_boxes"][0].cpu().numpy()
         pred_macro = int(torch.argmax(preds["pred_macro_column_logits"][0]).item()) + 1
@@ -812,6 +854,10 @@ class InferenceManager:
             "num_content_blocks": len(req.blocks),
             "num_template_slots": len(tmpl_vecs),
             "template_slot_source": slot_source,
+            "refiner_applied": use_refiner,
+            "bbox_parameterization": bbox_param,
+            "use_anchor_conditioning": use_anchor,
+            "include_order_index": include_order_index,
         }
         return raw_elements, metrics
 
@@ -1237,23 +1283,47 @@ class InferenceManager:
             "latency_ms": latency_ms,
         }
 
-        if self.metrics is not None:
+        if self.metrics is not None or self.drift_monitor is not None:
             total_words = int(sum(int(b.word_count or 0) for b in req.blocks))
             figure_count = int(sum(1 for b in req.blocks if b.scipost_category == "figure"))
+            fig_aspects = [
+                float(b.aspect_ratio)
+                for b in req.blocks
+                if b.scipost_category == "figure" and b.aspect_ratio is not None and b.aspect_ratio > 0
+            ]
+            mean_fig_asp = float(np.mean(fig_aspects)) if fig_aspects else None
             top1_rel = float(candidates_meta[0]["relevance_score"]) if candidates_meta else None
-            self.metrics.record_inference_success(
-                engine=engine,
-                orientation=poster_in.orientation,
-                duration_seconds=latency_s,
-                num_elements=len(req.blocks),
-                total_words=total_words,
-                figure_count=figure_count,
-                columns_used=int(columns_used),
-                top1_relevance=top1_rel,
-                overlap_area=float(geom_metrics.get("validated_overlap_area", 0.0)),
-                raw_overflow_rate=float(geom_metrics.get("raw_overflow_rate", 0.0)),
-                clamped_boxes=int(geom_metrics.get("clamped_boxes_count", 0)),
-            )
+            overlap_val = float(geom_metrics.get("validated_overlap_area", 0.0))
+
+            if self.metrics is not None:
+                self.metrics.record_inference_success(
+                    engine=engine,
+                    orientation=poster_in.orientation,
+                    duration_seconds=latency_s,
+                    num_elements=len(req.blocks),
+                    total_words=total_words,
+                    figure_count=figure_count,
+                    columns_used=int(columns_used),
+                    top1_relevance=top1_rel,
+                    overlap_area=overlap_val,
+                    raw_overflow_rate=float(geom_metrics.get("raw_overflow_rate", 0.0)),
+                    clamped_boxes=int(geom_metrics.get("clamped_boxes_count", 0)),
+                )
+
+            if self.drift_monitor is not None:
+                drift_snap = self.drift_monitor.record(
+                    DriftObservation(
+                        total_element_count=float(len(req.blocks)),
+                        total_word_count=float(total_words),
+                        figure_count=float(figure_count),
+                        mean_figure_aspect_ratio=mean_fig_asp,
+                        is_landscape=1.0 if poster_in.orientation == "landscape" else 0.0,
+                        top1_relevance=top1_rel,
+                        overlap_area=overlap_val,
+                    )
+                )
+                if self.metrics is not None:
+                    self.metrics.update_drift_metrics(drift_snap)
 
         konva_elements = self._to_konva_elements(
             raw_elements=validated_elements,

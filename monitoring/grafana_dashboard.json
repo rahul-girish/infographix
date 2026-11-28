@@ -1,0 +1,246 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "Grafana Cloud Prometheus data source",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "options": { "0": { "color": "red", "text": "NOT READY" }, "1": { "color": "green", "text": "READY" } }, "type": "value" }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "id": 1,
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "infographix_service_ready", "refId": "A" }],
+      "title": "Service Status",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "options": { "0": { "color": "green", "text": "STABLE" }, "1": { "color": "red", "text": "DRIFT ALERT" } }, "type": "value" }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "id": 2,
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "infographix_drift_alert_active", "refId": "A" }],
+      "title": "Data Drift Status",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.1 },
+              { "color": "red", "value": 0.2 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "id": 3,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "showThresholdLabels": true, "showThresholdMarkers": true },
+      "targets": [{ "expr": "infographix_drift_overall_psi", "refId": "A" }],
+      "title": "Overall Input Drift (Max PSI)",
+      "type": "gauge"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "mebibytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 900 },
+              { "color": "red", "value": 1500 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "id": 4,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "infographix_process_rss_mib", "refId": "A" }],
+      "title": "Render Process RSS Memory",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "lineWidth": 2, "fillOpacity": 10, "thresholdsStyle": { "mode": "line" } },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.1 },
+              { "color": "red", "value": 0.2 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "id": 5,
+      "targets": [{ "expr": "infographix_feature_drift_psi", "legendFormat": "{{feature}}", "refId": "A" }],
+      "title": "Input Feature Drift — PSI (vs. Train Split)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "custom": { "lineWidth": 2, "fillOpacity": 10 }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "id": 6,
+      "targets": [
+        { "expr": "infographix_feature_drift_ks", "legendFormat": "KS {{feature}}", "refId": "A" },
+        { "expr": "infographix_drift_orientation_shift", "legendFormat": "Orientation Shift", "refId": "B" }
+      ],
+      "title": "Input Feature Drift — KS Statistic & Orientation Shift",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "lineWidth": 2 }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "id": 7,
+      "targets": [
+        { "expr": "infographix_feature_current_mean{feature=\"total_element_count\"}", "legendFormat": "Current Mean Elements", "refId": "A" },
+        { "expr": "infographix_feature_reference_mean{feature=\"total_element_count\"}", "legendFormat": "Train Ref Mean Elements", "refId": "B" },
+        { "expr": "infographix_feature_current_mean{feature=\"figure_count\"}", "legendFormat": "Current Mean Figures", "refId": "C" },
+        { "expr": "infographix_feature_reference_mean{feature=\"figure_count\"}", "legendFormat": "Train Ref Mean Figures", "refId": "D" }
+      ],
+      "title": "Production Feature Means vs. Training Reference",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "lineWidth": 2 }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "id": 8,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, engine) (rate(infographix_inference_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 Latency ({{engine}})",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, engine) (rate(infographix_inference_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50 Latency ({{engine}})",
+          "refId": "B"
+        }
+      ],
+      "title": "Inference Latency (p50 / p95)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "lineWidth": 2 }
+        }
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 20 },
+      "id": 9,
+      "targets": [
+        {
+          "expr": "sum by (engine, status) (rate(infographix_inference_requests_total[5m])) * 60",
+          "legendFormat": "{{engine}} ({{status}}) req/min",
+          "refId": "A"
+        }
+      ],
+      "title": "Inference Request Rate (req/min)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "lineWidth": 2 }
+        }
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 20 },
+      "id": 10,
+      "targets": [
+        {
+          "expr": "rate(infographix_retrieval_top1_relevance_sum[5m]) / clamp_min(rate(infographix_retrieval_top1_relevance_count[5m]), 1e-6)",
+          "legendFormat": "Mean Top-1 Retrieval Relevance",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(infographix_layout_overlap_area_sum{engine=\"neural\"}[5m]) / clamp_min(rate(infographix_layout_overlap_area_count{engine=\"neural\"}[5m]), 1e-6)",
+          "legendFormat": "Mean Overlap Area (neural)",
+          "refId": "B"
+        }
+      ],
+      "title": "Model Output Quality (Retrieval Relevance & Overlap Area)",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 39,
+  "tags": ["infographix", "mlops", "drift", "prometheus"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "title": "Infographix — Production ML Monitoring & Data Drift",
+  "uid": "infographix-ml-monitoring"
+}

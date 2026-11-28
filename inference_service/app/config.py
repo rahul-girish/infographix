@@ -37,6 +37,13 @@ class Settings(BaseSettings):
 
     DEFAULT_ENGINE: Literal["adaptation", "neural"] = "neural"
     TORCH_DEVICE: str = "cpu"
+    NEURAL_USE_REFINER: bool = True
+
+    # Optional companion backend keepalive pinger
+    BACKEND_SERVICE_URL: Optional[str] = None
+    KEEPALIVE_ENABLED: bool = False
+    KEEPALIVE_INTERVAL_SECONDS: float = 300.0
+    KEEPALIVE_TIMEOUT_SECONDS: float = 5.0
 
     # Template element geometry table dependency (data/processed/features/v1/elements.parquet)
     ELEMENTS_PARQUET_PATH: str = "/app/data_cache/elements.parquet"
@@ -64,9 +71,18 @@ class Settings(BaseSettings):
     EAGER_LOAD_ADAPTATION_DATA: bool = False
     SKIP_STARTUP_INIT: bool = False
 
-    # Prometheus monitoring
+    # Prometheus & Online Drift Monitoring
     METRICS_ENABLED: bool = True
     METRICS_AUTH_TOKEN: Optional[str] = None
+    DRIFT_WINDOW_SIZE: int = 100
+    DRIFT_MIN_SAMPLES: int = 10
+    DRIFT_PSI_THRESHOLD: float = 0.20
+
+    # Optional Grafana Cloud OTLP Metrics Push (for hosted Prometheus + Grafana)
+    GRAFANA_OTLP_ENDPOINT: Optional[str] = None
+    GRAFANA_INSTANCE_ID: Optional[str] = None
+    GRAFANA_API_KEY: Optional[str] = None
+    GRAFANA_PUSH_INTERVAL_SECONDS: float = 15.0
 
     CORS_ORIGINS: List[str] = ["*"]
 
